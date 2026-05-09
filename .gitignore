@@ -1,7 +1,7 @@
 *.exe
 *.exe~
 *.dll
-!data/*.dll
+!internal/assets/*.dll
 *.obj
 *.o
 *.a
@@ -10,11 +10,9 @@
 *.test
 *.prof
 /vendor/
-/venv/
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 /build/
-/assets/
