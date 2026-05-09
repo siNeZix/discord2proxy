@@ -3,13 +3,11 @@ package deploy
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 
+	"discord-szx/internal/assets"
 	"discord-szx/internal/config"
 	"discord-szx/internal/discord"
 	"discord-szx/internal/proxy"
@@ -37,21 +35,13 @@ func isDiscordRunning() bool {
 	return bytes.Contains(out, []byte("Discord.exe"))
 }
 
-func applyProxyTemplate(template []byte, host string, port int) []byte {
-	var lines []string
-	for _, line := range strings.Split(string(template), "\n") {
-		kv := strings.SplitN(line, "=", 2)
-		if len(kv) == 2 {
-			switch strings.TrimSpace(kv[0]) {
-			case "SOCKS5_PROXY_ADDRESS":
-				line = "SOCKS5_PROXY_ADDRESS=" + host
-			case "SOCKS5_PROXY_PORT":
-				line = "SOCKS5_PROXY_PORT=" + strconv.Itoa(port)
-			}
-		}
-		lines = append(lines, line)
-	}
-	return []byte(strings.Join(lines, "\n"))
+func formatProxyConfig(host string, port int) []byte {
+	return []byte(fmt.Sprintf("SOCKS5_PROXY_ADDRESS=%s\nSOCKS5_PROXY_PORT=%d\n", host, port))
+}
+
+var dllData = map[string][]byte{
+	"DWrite.dll":      assets.DWriteDLL,
+	"force-proxy.dll": assets.ForceProxyDLL,
 }
 
 func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.ProxyInfo) error {
@@ -63,13 +53,7 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 		return d.dryRun(install, proxyInfo)
 	}
 
-	templatePath := d.Config.ProxyFilePath()
-	template, err := os.ReadFile(templatePath)
-	if err != nil {
-		return fmt.Errorf("read proxy template %s: %w", templatePath, err)
-	}
-
-	content := applyProxyTemplate(template, proxyInfo.Host, proxyInfo.Port)
+	content := formatProxyConfig(proxyInfo.Host, proxyInfo.Port)
 
 	targetProxyPath := filepath.Join(install.AppDir, d.Config.ProxyFile)
 	if err := writeFile(targetProxyPath, content); err != nil {
@@ -78,13 +62,15 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 	fmt.Printf("  Written %s\n", targetProxyPath)
 
 	for _, dll := range d.Config.DLLFiles {
-		src := d.Config.DLLSourcePath(dll)
-		dst := filepath.Join(install.AppDir, dll)
-
-		if err := copyFile(src, dst); err != nil {
-			return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
+		data, ok := dllData[dll]
+		if !ok {
+			return fmt.Errorf("unknown asset %s", dll)
 		}
-		fmt.Printf("  Copied %s -> %s\n", src, dst)
+		dst := filepath.Join(install.AppDir, dll)
+		if err := writeFile(dst, data); err != nil {
+			return fmt.Errorf("write %s to %s: %w", dll, dst, err)
+		}
+		fmt.Printf("  Written %s -> %s (%d bytes)\n", dll, dst, len(data))
 	}
 
 	return nil
@@ -112,9 +98,12 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 	fmt.Println("[DRY RUN] Would perform the following:")
 	fmt.Printf("  Write proxy.txt to %s (host=%s port=%d)\n", install.AppDir, proxyInfo.Host, proxyInfo.Port)
 	for _, dll := range d.Config.DLLFiles {
-		src := d.Config.DLLSourcePath(dll)
+		data, ok := dllData[dll]
+		if !ok {
+			continue
+		}
 		dst := filepath.Join(install.AppDir, dll)
-		fmt.Printf("  Copy %s -> %s\n", src, dst)
+		fmt.Printf("  Write %s -> %s (%d bytes)\n", dll, dst, len(data))
 	}
 	return nil
 }
@@ -130,28 +119,4 @@ func writeFile(path string, data []byte) error {
 		return err
 	}
 	return f.Sync()
-}
-
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	srcInfo, err := srcFile.Stat()
-	if err != nil {
-		return err
-	}
-
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode())
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		return err
-	}
-	return dstFile.Sync()
 }
