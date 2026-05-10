@@ -19,7 +19,7 @@ build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BUILDDIR)/$(BINARY)$(EXT) ./cmd/
 
 build-gui:
-	$(GO) build -ldflags "$(LDFLAGS) -H=windowsgui" -o $(BUILDDIR)/$(BINARYGUI)$(EXT) ./cmd/gui/
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BUILDDIR)/$(BINARYGUI)$(EXT) ./cmd/gui/
 
 clean:
 	rm -rf $(BUILDDIR)
