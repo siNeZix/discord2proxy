@@ -108,6 +108,27 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 	return nil
 }
 
+func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
+	if isDiscordRunning() && !d.Force {
+		return fmt.Errorf("Discord is running — close Discord first")
+	}
+
+	files := append([]string{d.Config.ProxyFile}, d.Config.DLLFiles...)
+	for _, name := range files {
+		p := filepath.Join(install.AppDir, name)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func IsInstalled(install *discord.DiscordInstall, cfg *config.Config) bool {
+	p := filepath.Join(install.AppDir, cfg.ProxyFile)
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 func writeFile(path string, data []byte) error {
 	f, err := os.Create(path)
 	if err != nil {
