@@ -190,7 +190,7 @@ func FindPrimaryDiscord(cfg *config.Config) (*DiscordInstall, error) {
 		return nil, err
 	}
 	if len(installs) == 0 {
-		return nil, fmt.Errorf("discord not found; tried registry and paths: %v", cfg.DiscordPaths)
+		return nil, fmt.Errorf("Discord не найден; проверены реестр и пути: %v", cfg.DiscordPaths)
 	}
 	return &installs[0], nil
 }
@@ -205,17 +205,17 @@ func FindDiscordByChannel(cfg *config.Config, channel string) (*DiscordInstall, 
 			return &inst, nil
 		}
 	}
-	return nil, fmt.Errorf("discord channel %q not found", channel)
+	return nil, fmt.Errorf("канал Discord %q не найден", channel)
 }
 
 func FindDiscordByPath(dir string) (*DiscordInstall, error) {
 	if _, err := os.Stat(dir); err != nil {
-		return nil, fmt.Errorf("discord path %s does not exist: %w", dir, err)
+		return nil, fmt.Errorf("путь Discord %s не существует: %w", dir, err)
 	}
 	channel := channelFromPath(dir)
 	appDir, version, ok := findLatestAppDir(dir)
 	if !ok {
-		return nil, fmt.Errorf("no app-x.x.x directory found in %s", dir)
+		return nil, fmt.Errorf("папка app-x.x.x не найдена в %s", dir)
 	}
 	return &DiscordInstall{
 		Path:    dir,

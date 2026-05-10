@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"time"
+	"unsafe"
 
 	"gioui.org/app"
 	"gioui.org/font"
@@ -18,12 +19,42 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+	"golang.org/x/sys/windows"
 
 	"discord-szx/internal/config"
 	"discord-szx/internal/deploy"
 	"discord-szx/internal/discord"
 	"discord-szx/internal/proxy"
 )
+
+var (
+	user32             = windows.NewLazyDLL("user32.dll")
+	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
+	procGetWindowRect    = user32.NewProc("GetWindowRect")
+	procSetWindowPos     = user32.NewProc("SetWindowPos")
+)
+
+const (
+	smCXScreen   = 0
+	smCYScreen   = 1
+	swpNoSize    = 0x0001
+	swpNoZOrder  = 0x0004
+)
+
+func centerWindow(hwnd uintptr) {
+	screenW, _, _ := procGetSystemMetrics.Call(smCXScreen)
+	screenH, _, _ := procGetSystemMetrics.Call(smCYScreen)
+
+	var rect windows.Rect
+	procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rect)))
+
+	winW := rect.Right - rect.Left
+	winH := rect.Bottom - rect.Top
+	x := (int32(screenW) - winW) / 2
+	y := (int32(screenH) - winH) / 2
+
+	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), 0, 0, swpNoSize|swpNoZOrder)
+}
 
 var (
 	colBg       = color.NRGBA{R: 0x1E, G: 0x1E, B: 0x2E, A: 0xFF}
@@ -55,6 +86,8 @@ type UI struct {
 	statusMsg   string
 	statusColor color.NRGBA
 	statusTime  time.Time
+	hwnd        uintptr
+	centered    bool
 }
 
 func Run() {
@@ -103,6 +136,15 @@ func Run() {
 				gtx := app.NewContext(&ops, e)
 				ui.layout(gtx)
 				e.Frame(gtx.Ops)
+				if ui.hwnd != 0 && !ui.centered {
+					ui.centered = true
+					hwnd := ui.hwnd
+					w.Run(func() { centerWindow(hwnd) })
+				}
+			case app.Win32ViewEvent:
+				if e.Valid() && ui.hwnd == 0 {
+					ui.hwnd = e.HWND
+				}
 			case app.DestroyEvent:
 				os.Exit(0)
 			}
@@ -114,18 +156,18 @@ func Run() {
 func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	paint.Fill(gtx.Ops, colBg)
 
-	if ui.btnInstall.Clicked(gtx) {
+	if ui.btnInstall.Clicked(gtx) && ui.install != nil && ui.proxyInfo != nil {
 		ui.doInstall()
 	}
-	if ui.btnUninstall.Clicked(gtx) {
+	if ui.btnUninstall.Clicked(gtx) && ui.install != nil && ui.installed {
 		ui.doUninstall()
 	}
 
-	if ui.statusMsg != "" && !ui.statusTime.IsZero() && time.Since(ui.statusTime) > 5*time.Second {
+	if ui.statusMsg != "" && ui.statusColor == colGreen && !ui.statusTime.IsZero() && time.Since(ui.statusTime) > 5*time.Second {
 		ui.statusMsg = ""
 		ui.statusTime = time.Time{}
 	}
-	if ui.statusMsg != "" && !ui.statusTime.IsZero() {
+	if ui.statusMsg != "" && ui.statusColor == colGreen && !ui.statusTime.IsZero() {
 		gtx.Execute(op.InvalidateCmd{At: ui.statusTime.Add(5 * time.Second)})
 	}
 
@@ -174,13 +216,13 @@ func (ui *UI) statusCards(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Max.X = cardW
 				gtx.Constraints.Min.X = cardW
-				return ui.statusCard(gtx, "PROXY", ui.proxyStatus(), ui.proxyErr == nil)
+				return ui.statusCard(gtx, "ПРОКСИ", ui.proxyStatus(), ui.proxyErr == nil)
 			}),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Max.X = cardW
 				gtx.Constraints.Min.X = cardW
-				return ui.statusCard(gtx, "STATUS", ui.installStatus(), ui.installed)
+				return ui.statusCard(gtx, "СТАТУС", ui.installStatus(), ui.installed)
 			}),
 		)
 	})
@@ -240,13 +282,18 @@ func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
 }
 
 func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
-	canInstall := ui.install != nil && ui.proxyInfo != nil && !ui.installed
+	canInstall := ui.install != nil && ui.proxyInfo != nil
 	canUninstall := ui.install != nil && ui.installed
+
+	installLabel := "Установить"
+	if ui.installed {
+		installLabel = "Переустановить"
+	}
 
 	return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(ui.theme, &ui.btnInstall, "Установить")
+				btn := material.Button(ui.theme, &ui.btnInstall, installLabel)
 				btn.CornerRadius = 8
 				if canInstall {
 					btn.Background = colAccent
@@ -306,14 +353,14 @@ func (ui *UI) discordStatus() string {
 	if ui.discordErr != nil {
 		return "Нет"
 	}
-	return "OK"
+	return "ОК"
 }
 
 func (ui *UI) proxyStatus() string {
 	if ui.proxyErr != nil {
 		return "Нет"
 	}
-	return "OK"
+	return "ОК"
 }
 
 func (ui *UI) installStatus() string {
@@ -327,6 +374,7 @@ func (ui *UI) doInstall() {
 	if ui.install == nil || ui.proxyInfo == nil {
 		return
 	}
+	reinstall := ui.installed
 	d := deploy.New(ui.cfg, false, false)
 	if err := d.Deploy(ui.install, ui.proxyInfo); err != nil {
 		ui.showStatus(fmt.Sprintf("Ошибка установки: %v", err), false)
@@ -337,7 +385,11 @@ func (ui *UI) doInstall() {
 		return
 	}
 	ui.installed = true
-	ui.showStatus("Прокси установлен! Перезапустите Discord.", true)
+	if reinstall {
+		ui.showStatus("Прокси переустановлен! Перезапустите Discord.", true)
+	} else {
+		ui.showStatus("Прокси установлен! Перезапустите Discord.", true)
+	}
 }
 
 func (ui *UI) doUninstall() {

@@ -6,12 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 
 	"discord-szx/internal/assets"
 	"discord-szx/internal/config"
 	"discord-szx/internal/discord"
 	"discord-szx/internal/proxy"
 )
+
+var hideWindow = &syscall.SysProcAttr{HideWindow: true}
 
 type Deployer struct {
 	Config *config.Config
@@ -28,7 +31,9 @@ func New(cfg *config.Config, dryRun, force bool) *Deployer {
 }
 
 func isDiscordRunning() bool {
-	out, err := exec.Command("tasklist", "/NH", "/FI", "IMAGENAME eq Discord.exe").Output()
+	cmd := exec.Command("tasklist", "/NH", "/FI", "IMAGENAME eq Discord.exe")
+	cmd.SysProcAttr = hideWindow
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
@@ -46,7 +51,7 @@ var dllData = map[string][]byte{
 
 func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.ProxyInfo) error {
 	if isDiscordRunning() && !d.Force {
-		return fmt.Errorf("Discord is running — files may be locked. Close Discord or use --force")
+		return fmt.Errorf("Discord запущен — файлы заблокированы. Закройте Discord и попробуйте снова")
 	}
 
 	if d.DryRun {
@@ -57,18 +62,18 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 
 	targetProxyPath := filepath.Join(install.AppDir, d.Config.ProxyFile)
 	if err := writeFile(targetProxyPath, content); err != nil {
-		return fmt.Errorf("write proxy.txt to %s: %w", targetProxyPath, err)
+		return fmt.Errorf("ошибка записи proxy.txt в %s: %w", targetProxyPath, err)
 	}
 	fmt.Printf("  Written %s\n", targetProxyPath)
 
 	for _, dll := range d.Config.DLLFiles {
 		data, ok := dllData[dll]
 		if !ok {
-			return fmt.Errorf("unknown asset %s", dll)
+			return fmt.Errorf("неизвестный файл %s", dll)
 		}
 		dst := filepath.Join(install.AppDir, dll)
 		if err := writeFile(dst, data); err != nil {
-			return fmt.Errorf("write %s to %s: %w", dll, dst, err)
+			return fmt.Errorf("ошибка записи %s в %s: %w", dll, dst, err)
 		}
 		fmt.Printf("  Written %s -> %s (%d bytes)\n", dll, dst, len(data))
 	}
@@ -84,10 +89,10 @@ func (d *Deployer) Verify(install *discord.DiscordInstall) error {
 		p := filepath.Join(install.AppDir, name)
 		info, err := os.Stat(p)
 		if err != nil {
-			return fmt.Errorf("verify: %s missing: %w", p, err)
+			return fmt.Errorf("проверка: %s отсутствует: %w", p, err)
 		}
 		if info.Size() == 0 {
-			return fmt.Errorf("verify: %s is empty", p)
+			return fmt.Errorf("проверка: файл %s пуст", p)
 		}
 		fmt.Printf("  Verified %s (%d bytes)\n", p, info.Size())
 	}
@@ -110,14 +115,14 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 
 func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
 	if isDiscordRunning() && !d.Force {
-		return fmt.Errorf("Discord is running — close Discord first")
+		return fmt.Errorf("Discord запущен — сначала закройте Discord")
 	}
 
 	files := append([]string{d.Config.ProxyFile}, d.Config.DLLFiles...)
 	for _, name := range files {
 		p := filepath.Join(install.AppDir, name)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", p, err)
+			return fmt.Errorf("ошибка удаления %s: %w", p, err)
 		}
 	}
 	return nil

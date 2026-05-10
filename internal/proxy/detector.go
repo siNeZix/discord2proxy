@@ -86,5 +86,5 @@ func DetectBestProxy(host string, ports []int) (*ProxyInfo, error) {
 		}
 	}
 
-	return nil, errors.New("no SOCKS5 proxy found on configured ports; ensure v2ray/nekobox is running")
+	return nil, errors.New("SOCKS5 прокси не найден; убедитесь, что v2ray или nekobox запущен")
 }
