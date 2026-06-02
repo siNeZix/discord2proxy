@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+
+	"discord-szx/internal/assets"
 )
 
 type Config struct {
@@ -19,7 +21,7 @@ func Default() *Config {
 	}
 
 	return &Config{
-		ProxyFile: "proxy.txt",
+		ProxyFile:  "proxy.txt",
 		ProxyPorts: []int{2080, 1080},
 		DiscordPaths: []string{
 			filepath.Join(localAppData, "Discord"),
@@ -27,6 +29,6 @@ func Default() *Config {
 			filepath.Join(localAppData, "DiscordCanary"),
 			filepath.Join(localAppData, "DiscordDevelopment"),
 		},
-		DLLFiles: []string{"DWrite.dll", "force-proxy.dll"},
+		DLLFiles: assets.Names(),
 	}
 }

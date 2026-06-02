@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"os"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -28,17 +29,17 @@ import (
 )
 
 var (
-	user32             = windows.NewLazyDLL("user32.dll")
+	user32               = windows.NewLazyDLL("user32.dll")
 	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 	procGetWindowRect    = user32.NewProc("GetWindowRect")
 	procSetWindowPos     = user32.NewProc("SetWindowPos")
 )
 
 const (
-	smCXScreen   = 0
-	smCYScreen   = 1
-	swpNoSize    = 0x0001
-	swpNoZOrder  = 0x0004
+	smCXScreen  = 0
+	smCYScreen  = 1
+	swpNoSize   = 0x0001
+	swpNoZOrder = 0x0004
 )
 
 func centerWindow(hwnd uintptr) {
@@ -74,14 +75,20 @@ type UI struct {
 	theme  *material.Theme
 	window *app.Window
 
+	// mu guards all mutable state below, which is written from worker
+	// goroutines (detection, install, uninstall) and read by the render loop.
+	mu         sync.Mutex
 	install    *discord.DiscordInstall
 	proxyInfo  *proxy.ProxyInfo
 	discordErr error
 	proxyErr   error
 	installed  bool
+	detecting  bool // initial detection in progress
+	busy       bool // install/uninstall in progress
 
 	btnInstall   widget.Clickable
 	btnUninstall widget.Clickable
+	chkForce     widget.Bool
 
 	statusMsg   string
 	statusColor color.NRGBA
@@ -92,22 +99,7 @@ type UI struct {
 
 func Run() {
 	cfg := config.Default()
-	ui := &UI{cfg: cfg}
-
-	install, err := discord.FindPrimaryDiscord(cfg)
-	if err != nil {
-		ui.discordErr = err
-	} else {
-		ui.install = install
-		ui.installed = deploy.IsInstalled(install, cfg)
-	}
-
-	proxyInfo, err := proxy.DetectBestProxy("127.0.0.1", cfg.ProxyPorts)
-	if err != nil {
-		ui.proxyErr = err
-	} else {
-		ui.proxyInfo = proxyInfo
-	}
+	ui := &UI{cfg: cfg, detecting: true}
 
 	th := material.NewTheme()
 	th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(gofont.Regular()))
@@ -127,6 +119,10 @@ func Run() {
 		app.MaxSize(unit.Dp(420), unit.Dp(320)),
 	)
 	ui.window = w
+
+	// Detect Discord and proxy asynchronously so the window appears
+	// immediately instead of freezing for up to several seconds.
+	go ui.detect()
 
 	go func() {
 		var ops op.Ops
@@ -156,19 +152,29 @@ func Run() {
 func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	paint.Fill(gtx.Ops, colBg)
 
-	if ui.btnInstall.Clicked(gtx) && ui.install != nil && ui.proxyInfo != nil {
-		ui.doInstall()
+	ui.mu.Lock()
+	canInstall := ui.install != nil && ui.proxyInfo != nil && !ui.busy && !ui.detecting
+	canUninstall := ui.install != nil && ui.installed && !ui.busy && !ui.detecting
+	statusMsg := ui.statusMsg
+	statusColor := ui.statusColor
+	statusTime := ui.statusTime
+	ui.mu.Unlock()
+
+	force := ui.chkForce.Value
+	if ui.btnInstall.Clicked(gtx) && canInstall {
+		go ui.doInstall(force)
 	}
-	if ui.btnUninstall.Clicked(gtx) && ui.install != nil && ui.installed {
-		ui.doUninstall()
+	if ui.btnUninstall.Clicked(gtx) && canUninstall {
+		go ui.doUninstall(force)
 	}
 
-	if ui.statusMsg != "" && ui.statusColor == colGreen && !ui.statusTime.IsZero() && time.Since(ui.statusTime) > 5*time.Second {
+	if statusMsg != "" && statusColor == colGreen && !statusTime.IsZero() && time.Since(statusTime) > 5*time.Second {
+		ui.mu.Lock()
 		ui.statusMsg = ""
 		ui.statusTime = time.Time{}
-	}
-	if ui.statusMsg != "" && ui.statusColor == colGreen && !ui.statusTime.IsZero() {
-		gtx.Execute(op.InvalidateCmd{At: ui.statusTime.Add(5 * time.Second)})
+		ui.mu.Unlock()
+	} else if statusMsg != "" && statusColor == colGreen && !statusTime.IsZero() {
+		gtx.Execute(op.InvalidateCmd{At: statusTime.Add(5 * time.Second)})
 	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -181,6 +187,7 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(20)}.Layout(gtx, ui.buttons)
 		}),
+		layout.Rigid(ui.forceRow),
 		layout.Rigid(ui.statusBanner),
 		layout.Flexed(1, ui.footer),
 	)
@@ -203,6 +210,15 @@ func (ui *UI) divider(gtx layout.Context) layout.Dimensions {
 }
 
 func (ui *UI) statusCards(gtx layout.Context) layout.Dimensions {
+	ui.mu.Lock()
+	discordOK := ui.discordErr == nil && ui.install != nil
+	proxyOK := ui.proxyErr == nil && ui.proxyInfo != nil
+	installed := ui.installed
+	discordVal := ui.discordStatusLocked()
+	proxyVal := ui.proxyStatusLocked()
+	installVal := ui.installStatusLocked()
+	ui.mu.Unlock()
+
 	return layout.Inset{Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		gap := gtx.Dp(14)
 		cardW := (gtx.Constraints.Max.X - gap*2) / 3
@@ -210,19 +226,19 @@ func (ui *UI) statusCards(gtx layout.Context) layout.Dimensions {
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Max.X = cardW
 				gtx.Constraints.Min.X = cardW
-				return ui.statusCard(gtx, "DISCORD", ui.discordStatus(), ui.discordErr == nil)
+				return ui.statusCard(gtx, "DISCORD", discordVal, discordOK)
 			}),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Max.X = cardW
 				gtx.Constraints.Min.X = cardW
-				return ui.statusCard(gtx, "ПРОКСИ", ui.proxyStatus(), ui.proxyErr == nil)
+				return ui.statusCard(gtx, "ПРОКСИ", proxyVal, proxyOK)
 			}),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Max.X = cardW
 				gtx.Constraints.Min.X = cardW
-				return ui.statusCard(gtx, "СТАТУС", ui.installStatus(), ui.installed)
+				return ui.statusCard(gtx, "СТАТУС", installVal, installed)
 			}),
 		)
 	})
@@ -270,11 +286,19 @@ func (ui *UI) statusCard(gtx layout.Context, label, value string, ok bool) layou
 }
 
 func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
+	ui.mu.Lock()
+	var txt string
+	switch {
+	case ui.detecting:
+		txt = "Поиск Discord и прокси..."
+	case ui.install != nil:
+		txt = fmt.Sprintf("Найден: %s (%s)", ui.install.Channel, ui.install.Version)
+	default:
+		txt = "Discord не найден"
+	}
+	ui.mu.Unlock()
+
 	return layout.Inset{Left: unit.Dp(20), Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		txt := "Discord не найден"
-		if ui.install != nil {
-			txt = fmt.Sprintf("Найден: %s (%s)", ui.install.Channel, ui.install.Version)
-		}
 		lbl := material.Caption(ui.theme, txt)
 		lbl.Color = colTextDim
 		return lbl.Layout(gtx)
@@ -282,12 +306,22 @@ func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
 }
 
 func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
-	canInstall := ui.install != nil && ui.proxyInfo != nil
-	canUninstall := ui.install != nil && ui.installed
+	ui.mu.Lock()
+	hasInstall := ui.install != nil
+	hasProxy := ui.proxyInfo != nil
+	installed := ui.installed
+	blocked := ui.busy || ui.detecting
+	ui.mu.Unlock()
+
+	canInstall := hasInstall && hasProxy && !blocked
+	canUninstall := hasInstall && installed && !blocked
 
 	installLabel := "Установить"
-	if ui.installed {
+	if installed {
 		installLabel = "Переустановить"
+	}
+	if blocked {
+		installLabel = "Подождите..."
 	}
 
 	return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -320,10 +354,30 @@ func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 	})
 }
 
+func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			cb := material.CheckBox(ui.theme, &ui.chkForce, "Принудительно (Discord запущен)")
+			cb.Color = colTextDim
+			cb.IconColor = colAccent
+			cb.TextSize = unit.Sp(12)
+			return cb.Layout(gtx)
+		})
+	})
+}
+
 func (ui *UI) statusBanner(gtx layout.Context) layout.Dimensions {
-	if ui.statusMsg == "" {
+	ui.mu.Lock()
+	msg := ui.statusMsg
+	col := ui.statusColor
+	ui.mu.Unlock()
+	if msg == "" {
 		return layout.Dimensions{}
 	}
+	return ui.statusBannerDraw(gtx, msg, col)
+}
+
+func (ui *UI) statusBannerDraw(gtx layout.Context, msg string, col color.NRGBA) layout.Dimensions {
 	return layout.Inset{Top: unit.Dp(8), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		h := gtx.Dp(28)
 		w := gtx.Constraints.Max.X
@@ -332,8 +386,8 @@ func (ui *UI) statusBanner(gtx layout.Context) layout.Dimensions {
 		paint.FillShape(gtx.Ops, colBg2, clip.UniformRRect(image.Rect(0, 0, w, h), r).Op(gtx.Ops))
 
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(ui.theme, ui.statusMsg)
-			lbl.Color = ui.statusColor
+			lbl := material.Caption(ui.theme, msg)
+			lbl.Color = col
 			return lbl.Layout(gtx)
 		})
 	})
@@ -349,63 +403,124 @@ func (ui *UI) footer(gtx layout.Context) layout.Dimensions {
 	})
 }
 
-func (ui *UI) discordStatus() string {
-	if ui.discordErr != nil {
+// *Locked helpers must be called with ui.mu held.
+
+func (ui *UI) discordStatusLocked() string {
+	if ui.discordErr != nil || ui.install == nil {
 		return "Нет"
 	}
 	return "ОК"
 }
 
-func (ui *UI) proxyStatus() string {
-	if ui.proxyErr != nil {
+func (ui *UI) proxyStatusLocked() string {
+	if ui.proxyErr != nil || ui.proxyInfo == nil {
 		return "Нет"
 	}
 	return "ОК"
 }
 
-func (ui *UI) installStatus() string {
+func (ui *UI) installStatusLocked() string {
 	if ui.installed {
 		return "Активно"
 	}
 	return "Неактивно"
 }
 
-func (ui *UI) doInstall() {
-	if ui.install == nil || ui.proxyInfo == nil {
-		return
-	}
-	reinstall := ui.installed
-	d := deploy.New(ui.cfg, false, false)
-	if err := d.Deploy(ui.install, ui.proxyInfo); err != nil {
-		ui.showStatus(fmt.Sprintf("Ошибка установки: %v", err), false)
-		return
-	}
-	if err := d.Verify(ui.install); err != nil {
-		ui.showStatus(fmt.Sprintf("Ошибка проверки: %v", err), false)
-		return
-	}
-	ui.installed = true
-	if reinstall {
-		ui.showStatus("Прокси переустановлен! Перезапустите Discord.", true)
+// detect runs the initial Discord + proxy discovery off the render thread.
+func (ui *UI) detect() {
+	install, derr := discord.FindPrimaryDiscord(ui.cfg)
+	proxyInfo, perr := proxy.DetectBestProxy("127.0.0.1", ui.cfg.ProxyPorts)
+
+	ui.mu.Lock()
+	if derr != nil {
+		ui.discordErr = derr
+		ui.install = nil
 	} else {
-		ui.showStatus("Прокси установлен! Перезапустите Discord.", true)
+		ui.install = install
+		ui.installed = deploy.IsInstalled(install, ui.cfg)
 	}
+	if perr != nil {
+		ui.proxyErr = perr
+		ui.proxyInfo = nil
+	} else {
+		ui.proxyInfo = proxyInfo
+	}
+	ui.detecting = false
+	ui.mu.Unlock()
+	ui.window.Invalidate()
 }
 
-func (ui *UI) doUninstall() {
-	if ui.install == nil {
+func (ui *UI) doInstall(force bool) {
+	ui.mu.Lock()
+	if ui.install == nil || ui.proxyInfo == nil || ui.busy {
+		ui.mu.Unlock()
 		return
 	}
-	d := deploy.New(ui.cfg, false, false)
-	if err := d.Uninstall(ui.install); err != nil {
-		ui.showStatus(fmt.Sprintf("Ошибка удаления: %v", err), false)
+	ui.busy = true
+	install := ui.install
+	proxyInfo := ui.proxyInfo
+	reinstall := ui.installed
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+
+	d := deploy.New(ui.cfg, false, force)
+	if err := d.Deploy(install, proxyInfo); err != nil {
+		ui.finishStatus(fmt.Sprintf("Ошибка установки: %v", err), false, false)
 		return
 	}
-	ui.installed = false
-	ui.showStatus("Прокси удалён! Перезапустите Discord.", true)
+	if err := d.Verify(install); err != nil {
+		ui.finishStatus(fmt.Sprintf("Ошибка проверки: %v", err), false, false)
+		return
+	}
+	msg := "Прокси установлен! Перезапустите Discord."
+	if reinstall {
+		msg = "Прокси переустановлен! Перезапустите Discord."
+	}
+	ui.finishStatus(msg, true, true)
 }
 
-func (ui *UI) showStatus(msg string, ok bool) {
+func (ui *UI) doUninstall(force bool) {
+	ui.mu.Lock()
+	if ui.install == nil || ui.busy {
+		ui.mu.Unlock()
+		return
+	}
+	ui.busy = true
+	install := ui.install
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+
+	d := deploy.New(ui.cfg, false, force)
+	if err := d.Uninstall(install); err != nil {
+		ui.finishStatus(fmt.Sprintf("Ошибка удаления: %v", err), false, false)
+		return
+	}
+	ui.finishStatusInstalled(false, "Прокси удалён! Перезапустите Discord.", true)
+}
+
+// finishStatus clears busy, sets the banner and optionally re-detects the
+// installed state from disk so the UI reflects reality after the operation.
+func (ui *UI) finishStatus(msg string, ok, reReadInstalled bool) {
+	ui.mu.Lock()
+	ui.busy = false
+	if reReadInstalled && ui.install != nil {
+		ui.installed = deploy.IsInstalled(ui.install, ui.cfg)
+	}
+	ui.setStatusLocked(msg, ok)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+}
+
+func (ui *UI) finishStatusInstalled(installed bool, msg string, ok bool) {
+	ui.mu.Lock()
+	ui.busy = false
+	ui.installed = installed
+	ui.setStatusLocked(msg, ok)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+}
+
+func (ui *UI) setStatusLocked(msg string, ok bool) {
 	ui.statusMsg = msg
 	if ok {
 		ui.statusColor = colGreen
@@ -413,5 +528,4 @@ func (ui *UI) showStatus(msg string, ok bool) {
 		ui.statusColor = colRed
 	}
 	ui.statusTime = time.Now()
-	ui.window.Invalidate()
 }

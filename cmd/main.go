@@ -17,7 +17,7 @@ func main() {
 	proxyPort := flag.Int("proxy-port", 0, "Override proxy port (0 = auto-detect)")
 	proxyHost := flag.String("proxy-host", "127.0.0.1", "Override proxy host")
 	discordPath := flag.String("discord-path", "", "Override Discord installation path")
-	channel := flag.String("channel", "", "Select Discord channel: stable|ptb|canary|dev")
+	channel := flag.String("channel", "", "Select Discord channel: stable|ptb|canary|development (alias: dev)")
 	dryRun := flag.Bool("dry-run", false, "Show what would be done without executing")
 	force := flag.Bool("force", false, "Deploy even if Discord is running")
 	noVerify := flag.Bool("no-verify", false, "Skip post-deploy verification")
@@ -33,11 +33,22 @@ func main() {
 
 	if *proxyPort != 0 {
 		fmt.Printf("  Using manual proxy: %s:%d\n", *proxyHost, *proxyPort)
-		proxyInfo = &proxy.ProxyInfo{
-			Host:   *proxyHost,
-			Port:   *proxyPort,
-			Source: "manual",
-			Alive:  true,
+		proxyInfo, err = proxy.VerifyProxy(*proxyHost, *proxyPort)
+		if err != nil {
+			if *force {
+				fmt.Fprintf(os.Stderr, "  WARNING: %v (continuing due to -force)\n", err)
+				proxyInfo = &proxy.ProxyInfo{
+					Host:   *proxyHost,
+					Port:   *proxyPort,
+					Source: "manual",
+					Alive:  false,
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "ERROR: %v (use -force to deploy anyway)\n", err)
+				os.Exit(1)
+			}
+		} else {
+			proxyInfo.Source = "manual"
 		}
 	} else {
 		proxyInfo, err = proxy.DetectBestProxy(*proxyHost, cfg.ProxyPorts)

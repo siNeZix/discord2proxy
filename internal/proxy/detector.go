@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -39,23 +41,36 @@ func detectOnPort(host string, port int) *ProxyInfo {
 	}
 	defer conn.Close()
 
-	_, err = conn.Write([]byte{0x05, 0x01, 0x00})
-	if err != nil {
+	// Bound both write and read so a hung peer can't block indefinitely.
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// SOCKS5 greeting: version 5, 1 method, "no authentication" (0x00).
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		return info
 	}
 
 	buf := make([]byte, 2)
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, err = conn.Read(buf)
-	if err != nil {
+	if _, err := io.ReadFull(conn, buf); err != nil {
 		return info
 	}
 
-	if buf[0] == 0x05 {
+	// Valid reply: version 5 and a method other than 0xFF ("no acceptable
+	// methods"). 0xFF means the server rejected our auth and isn't usable.
+	if buf[0] == 0x05 && buf[1] != 0xFF {
 		info.Alive = true
 	}
 
 	return info
+}
+
+// VerifyProxy actively checks that a specific host:port speaks SOCKS5.
+// Returns a populated ProxyInfo on success, or an error if unreachable.
+func VerifyProxy(host string, port int) (*ProxyInfo, error) {
+	info := detectOnPort(host, port)
+	if !info.Alive {
+		return nil, fmt.Errorf("прокси %s:%d не отвечает по SOCKS5", host, port)
+	}
+	return info, nil
 }
 
 func DetectProxies(host string, ports []int) ([]ProxyInfo, error) {
@@ -78,10 +93,23 @@ func DetectProxies(host string, ports []int) ([]ProxyInfo, error) {
 	return results, nil
 }
 
+// DetectBestProxy probes all ports concurrently and returns the first alive
+// proxy in the priority order given by ports. Probing in parallel bounds the
+// total wait to a single timeout (~3s) instead of N×3s.
 func DetectBestProxy(host string, ports []int) (*ProxyInfo, error) {
-	for _, port := range ports {
-		info := detectOnPort(host, port)
-		if info.Alive {
+	results := make([]*ProxyInfo, len(ports))
+	var wg sync.WaitGroup
+	for i, port := range ports {
+		wg.Add(1)
+		go func(idx, p int) {
+			defer wg.Done()
+			results[idx] = detectOnPort(host, p)
+		}(i, port)
+	}
+	wg.Wait()
+
+	for _, info := range results {
+		if info != nil && info.Alive {
 			return info, nil
 		}
 	}

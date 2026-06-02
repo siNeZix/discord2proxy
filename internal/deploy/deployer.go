@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,27 +31,44 @@ func New(cfg *config.Config, dryRun, force bool) *Deployer {
 	}
 }
 
-func isDiscordRunning() bool {
-	cmd := exec.Command("tasklist", "/NH", "/FI", "IMAGENAME eq Discord.exe")
+// channelExeName returns the Discord process image name for a given channel.
+func channelExeName(channel string) string {
+	switch channel {
+	case "ptb":
+		return "DiscordPTB.exe"
+	case "canary":
+		return "DiscordCanary.exe"
+	case "development":
+		return "DiscordDevelopment.exe"
+	default:
+		return "Discord.exe"
+	}
+}
+
+// isProcessRunning reports whether a process with the given image name is
+// running. On a tasklist failure it fails closed (returns true) so callers
+// don't deploy over a possibly-running, file-locking Discord.
+func isProcessRunning(exeName string) bool {
+	cmd := exec.Command("tasklist", "/NH", "/FI", "IMAGENAME eq "+exeName)
 	cmd.SysProcAttr = hideWindow
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		// Fail closed: assume running rather than risk locked-file writes.
+		return true
 	}
-	return bytes.Contains(out, []byte("Discord.exe"))
+	return bytes.Contains(out, []byte(exeName))
+}
+
+func isDiscordRunning(channel string) bool {
+	return isProcessRunning(channelExeName(channel))
 }
 
 func formatProxyConfig(host string, port int) []byte {
 	return []byte(fmt.Sprintf("SOCKS5_PROXY_ADDRESS=%s\nSOCKS5_PROXY_PORT=%d\n", host, port))
 }
 
-var dllData = map[string][]byte{
-	"DWrite.dll":      assets.DWriteDLL,
-	"force-proxy.dll": assets.ForceProxyDLL,
-}
-
 func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.ProxyInfo) error {
-	if isDiscordRunning() && !d.Force {
+	if isDiscordRunning(install.Channel) && !d.Force {
 		return fmt.Errorf("Discord запущен — файлы заблокированы. Закройте Discord и попробуйте снова")
 	}
 
@@ -67,7 +85,7 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 	fmt.Printf("  Written %s\n", targetProxyPath)
 
 	for _, dll := range d.Config.DLLFiles {
-		data, ok := dllData[dll]
+		data, ok := assets.DLLData[dll]
 		if !ok {
 			return fmt.Errorf("неизвестный файл %s", dll)
 		}
@@ -103,7 +121,7 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 	fmt.Println("[DRY RUN] Would perform the following:")
 	fmt.Printf("  Write proxy.txt to %s (host=%s port=%d)\n", install.AppDir, proxyInfo.Host, proxyInfo.Port)
 	for _, dll := range d.Config.DLLFiles {
-		data, ok := dllData[dll]
+		data, ok := assets.DLLData[dll]
 		if !ok {
 			continue
 		}
@@ -114,16 +132,20 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 }
 
 func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
-	if isDiscordRunning() && !d.Force {
+	if isDiscordRunning(install.Channel) && !d.Force {
 		return fmt.Errorf("Discord запущен — сначала закройте Discord")
 	}
 
 	files := append([]string{d.Config.ProxyFile}, d.Config.DLLFiles...)
+	var errs []error
 	for _, name := range files {
 		p := filepath.Join(install.AppDir, name)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("ошибка удаления %s: %w", p, err)
+			errs = append(errs, fmt.Errorf("ошибка удаления %s: %w", p, err))
 		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -134,15 +156,32 @@ func IsInstalled(install *discord.DiscordInstall, cfg *config.Config) bool {
 	return err == nil
 }
 
+// writeFile writes data atomically: it writes to a temp file in the same
+// directory, fsyncs it, then renames over the target so an interrupted write
+// cannot corrupt the destination (e.g. a partially written DLL).
 func writeFile(path string, data []byte) error {
-	f, err := os.Create(path)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".szx-tmp-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op if rename succeeded
 
-	if _, err := f.Write(data); err != nil {
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return err
 	}
-	return f.Sync()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// On Windows os.Rename fails if the target exists; remove it first.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

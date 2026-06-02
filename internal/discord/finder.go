@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
@@ -43,6 +44,41 @@ func channelFromPath(p string) string {
 	}
 }
 
+// parseAppVersion extracts numeric version components from an "app-1.0.10000"
+// directory name. Returns nil if the name has no parseable version.
+func parseAppVersion(name string) []int {
+	raw := strings.TrimPrefix(name, "app-")
+	if raw == name {
+		return nil
+	}
+	parts := strings.Split(raw, ".")
+	nums := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil
+		}
+		nums = append(nums, n)
+	}
+	if len(nums) == 0 {
+		return nil
+	}
+	return nums
+}
+
+// compareVersions returns >0 if a is newer than b, <0 if older, 0 if equal.
+func compareVersions(a, b []int) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			if a[i] > b[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	return len(a) - len(b)
+}
+
 func findLatestAppDir(discordDir string) (string, string, bool) {
 	entries, err := os.ReadDir(discordDir)
 	if err != nil {
@@ -50,7 +86,8 @@ func findLatestAppDir(discordDir string) (string, string, bool) {
 	}
 
 	var best string
-	var bestVer string
+	var bestName string
+	var bestVer []int
 	for _, e := range entries {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), "app-") {
 			continue
@@ -59,12 +96,35 @@ func findLatestAppDir(discordDir string) (string, string, bool) {
 		if _, err := os.Stat(exePath); err != nil {
 			continue
 		}
-		if e.Name() > bestVer {
-			bestVer = e.Name()
+		ver := parseAppVersion(e.Name())
+		if ver == nil {
+			continue
+		}
+		if best == "" || compareVersions(ver, bestVer) > 0 {
+			bestVer = ver
+			bestName = e.Name()
 			best = filepath.Join(discordDir, e.Name())
 		}
 	}
-	return best, bestVer, best != ""
+	return best, bestName, best != ""
+}
+
+// exeFromCommandLine extracts the executable path from a Windows command line.
+// Handles a quoted path ("C:\dir\Update.exe" --uninstall) as well as an
+// unquoted path where the first ".exe" token marks the end of the path.
+func exeFromCommandLine(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if strings.HasPrefix(cmd, `"`) {
+		if end := strings.Index(cmd[1:], `"`); end >= 0 {
+			return cmd[1 : 1+end]
+		}
+		return strings.Trim(cmd, `"`)
+	}
+	lower := strings.ToLower(cmd)
+	if idx := strings.Index(lower, ".exe"); idx >= 0 {
+		return cmd[:idx+len(".exe")]
+	}
+	return cmd
 }
 
 func findFromRegistry() []DiscordInstall {
@@ -96,17 +156,17 @@ func findFromRegistry() []DiscordInstall {
 		}
 
 		installLoc, _, err := sk.GetStringValue("InstallLocation")
-		if err != nil {
+		if err != nil || strings.TrimSpace(installLoc) == "" {
 			uninstallStr, _, err2 := sk.GetStringValue("UninstallString")
 			if err2 != nil {
 				sk.Close()
 				continue
 			}
-			installLoc = filepath.Dir(strings.Trim(uninstallStr, `"`))
+			installLoc = filepath.Dir(exeFromCommandLine(uninstallStr))
 		}
 		sk.Close()
 
-		installLoc = strings.Trim(installLoc, `"`)
+		installLoc = strings.Trim(strings.TrimSpace(installLoc), `"`)
 
 		channel := channelFromPath(installLoc)
 		appDir, version, ok := findLatestAppDir(installLoc)
@@ -195,14 +255,31 @@ func FindPrimaryDiscord(cfg *config.Config) (*DiscordInstall, error) {
 	return &installs[0], nil
 }
 
+// NormalizeChannel maps user-facing channel aliases to canonical names.
+func NormalizeChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "dev", "development":
+		return "development"
+	case "ptb":
+		return "ptb"
+	case "canary":
+		return "canary"
+	case "stable":
+		return "stable"
+	default:
+		return strings.ToLower(strings.TrimSpace(channel))
+	}
+}
+
 func FindDiscordByChannel(cfg *config.Config, channel string) (*DiscordInstall, error) {
+	channel = NormalizeChannel(channel)
 	installs, err := FindDiscord(cfg)
 	if err != nil {
 		return nil, err
 	}
-	for _, inst := range installs {
-		if inst.Channel == channel {
-			return &inst, nil
+	for i := range installs {
+		if installs[i].Channel == channel {
+			return &installs[i], nil
 		}
 	}
 	return nil, fmt.Errorf("канал Discord %q не найден", channel)
