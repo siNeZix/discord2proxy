@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"discord-szx/internal/assets"
 	"discord-szx/internal/config"
@@ -66,13 +67,48 @@ func IsDiscordRunning(channel string) bool {
 	return isProcessRunning(channelExeName(channel))
 }
 
+// killProcess force-terminates all processes with the given image name,
+// including child processes (/T). It is best-effort: taskkill returns a
+// non-zero exit code when no matching process is found, which we ignore.
+func killProcess(exeName string) error {
+	cmd := exec.Command("taskkill", "/F", "/IM", exeName, "/T")
+	cmd.SysProcAttr = hideWindow
+	_ = cmd.Run()
+	return nil
+}
+
+// forceCloseDiscord terminates Discord for the channel and waits until the
+// process has actually exited (and released its file locks), so subsequent
+// writes to the app directory don't fail. Times out after ~5s.
+func forceCloseDiscord(channel string) error {
+	exe := channelExeName(channel)
+	if err := killProcess(exe); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !isProcessRunning(exe) {
+			// Give the OS a brief moment to release file handles.
+			time.Sleep(300 * time.Millisecond)
+			return nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return fmt.Errorf("не удалось завершить Discord (%s)", exe)
+}
+
 func formatProxyConfig(host string, port int) []byte {
 	return []byte(fmt.Sprintf("SOCKS5_PROXY_ADDRESS=%s\nSOCKS5_PROXY_PORT=%d\n", host, port))
 }
 
 func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.ProxyInfo) error {
-	if IsDiscordRunning(install.Channel) && !d.Force {
-		return fmt.Errorf("Discord запущен — файлы заблокированы. Закройте Discord и попробуйте снова")
+	if IsDiscordRunning(install.Channel) {
+		if !d.Force {
+			return fmt.Errorf("Discord запущен — файлы заблокированы. Закройте Discord и попробуйте снова")
+		}
+		if err := forceCloseDiscord(install.Channel); err != nil {
+			return err
+		}
 	}
 
 	if d.DryRun {
@@ -135,8 +171,13 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 }
 
 func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
-	if IsDiscordRunning(install.Channel) && !d.Force {
-		return fmt.Errorf("Discord запущен — сначала закройте Discord")
+	if IsDiscordRunning(install.Channel) {
+		if !d.Force {
+			return fmt.Errorf("Discord запущен — сначала закройте Discord")
+		}
+		if err := forceCloseDiscord(install.Channel); err != nil {
+			return err
+		}
 	}
 
 	files := append([]string{d.Config.ProxyFile}, d.Config.DLLFiles...)

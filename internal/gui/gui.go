@@ -486,9 +486,16 @@ func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
 		return layout.Dimensions{}
 	}
 
+	// The checkbox label switches to a warning while force is enabled, and
+	// reverts to the original prompt when unchecked.
+	label := "Discord запущен — установить принудительно"
+	if ui.chkForce.Value {
+		label = "Discord будет закрыт во время установки"
+	}
+
 	return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			cb := material.CheckBox(ui.theme, &ui.chkForce, "Discord запущен — установить принудительно")
+			cb := material.CheckBox(ui.theme, &ui.chkForce, label)
 			cb.Color = colRed
 			cb.IconColor = colRed
 			cb.TextSize = unit.Sp(12)
