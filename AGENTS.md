@@ -1,6 +1,6 @@
-# discord-szx
+# discord2proxy
 
-Discord SOCKS5 proxy deployer for Windows. Embeds DLLs into Discord's app directory to force proxy routing through v2ray/nekobox.
+Discord SOCKS5 proxy deployer for Windows. (Go module path remains `discord-szx`.) Embeds DLLs into Discord's app directory to force proxy routing through v2ray/nekobox.
 
 ## Build
 

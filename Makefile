@@ -1,5 +1,5 @@
-BINARY    := discord-szx
-BINARYGUI := discord-szx-gui
+BINARY    := discord2proxy
+BINARYGUI := discord2proxy-gui
 BUILDDIR  := build
 
 ifeq ($(OS),Windows_NT)
@@ -9,7 +9,12 @@ EXT :=
 endif
 
 GO      := go
-LDFLAGS := -s -w
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+ifeq ($(strip $(VERSION)),)
+VERSION := dev
+endif
+VERSIONPKG := discord-szx/internal/config
+LDFLAGS    := -s -w -X $(VERSIONPKG).Version=$(VERSION)
 
 .PHONY: all build build-gui clean
 

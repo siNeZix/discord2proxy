@@ -7,6 +7,20 @@ import (
 	"discord-szx/internal/assets"
 )
 
+// AppName is the user-facing product name.
+const AppName = "discord2proxy"
+
+// Version is the application version. It defaults to "1.0.0" and can be
+// overridden at build time via:
+//
+//	-ldflags "-X discord-szx/internal/config.Version=<value>"
+var Version = "1.0.0"
+
+// Title returns the product name with version, e.g. "discord2proxy v1.0.0".
+func Title() string {
+	return AppName + " v" + Version
+}
+
 type Config struct {
 	ProxyFile    string
 	ProxyPorts   []int

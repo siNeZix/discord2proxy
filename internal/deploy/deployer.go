@@ -59,7 +59,10 @@ func isProcessRunning(exeName string) bool {
 	return bytes.Contains(out, []byte(exeName))
 }
 
-func isDiscordRunning(channel string) bool {
+// IsDiscordRunning reports whether the Discord process for the given channel
+// is currently running. Exposed for the GUI to poll without performing any
+// deploy action.
+func IsDiscordRunning(channel string) bool {
 	return isProcessRunning(channelExeName(channel))
 }
 
@@ -68,7 +71,7 @@ func formatProxyConfig(host string, port int) []byte {
 }
 
 func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.ProxyInfo) error {
-	if isDiscordRunning(install.Channel) && !d.Force {
+	if IsDiscordRunning(install.Channel) && !d.Force {
 		return fmt.Errorf("Discord запущен — файлы заблокированы. Закройте Discord и попробуйте снова")
 	}
 
@@ -132,7 +135,7 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 }
 
 func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
-	if isDiscordRunning(install.Channel) && !d.Force {
+	if IsDiscordRunning(install.Channel) && !d.Force {
 		return fmt.Errorf("Discord запущен — сначала закройте Discord")
 	}
 

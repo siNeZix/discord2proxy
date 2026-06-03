@@ -71,20 +71,22 @@ var (
 )
 
 type UI struct {
-	cfg    *config.Config
-	theme  *material.Theme
-	window *app.Window
+	cfg      *config.Config
+	theme    *material.Theme
+	window   *app.Window
+	stopChan chan struct{}
 
 	// mu guards all mutable state below, which is written from worker
 	// goroutines (detection, install, uninstall) and read by the render loop.
-	mu         sync.Mutex
-	install    *discord.DiscordInstall
-	proxyInfo  *proxy.ProxyInfo
-	discordErr error
-	proxyErr   error
-	installed  bool
-	detecting  bool // initial detection in progress
-	busy       bool // install/uninstall in progress
+	mu             sync.Mutex
+	install        *discord.DiscordInstall
+	proxyInfo      *proxy.ProxyInfo
+	discordErr     error
+	proxyErr       error
+	installed      bool
+	detecting      bool // initial detection in progress
+	busy           bool // install/uninstall in progress
+	discordRunning bool // updated by the background watcher
 
 	btnInstall   widget.Clickable
 	btnUninstall widget.Clickable
@@ -99,7 +101,11 @@ type UI struct {
 
 func Run() {
 	cfg := config.Default()
-	ui := &UI{cfg: cfg, detecting: true}
+	ui := &UI{
+		cfg:       cfg,
+		detecting: true,
+		stopChan:  make(chan struct{}),
+	}
 
 	th := material.NewTheme()
 	th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(gofont.Regular()))
@@ -114,7 +120,7 @@ func Run() {
 	w := new(app.Window)
 	w.Option(
 		app.Size(unit.Dp(420), unit.Dp(320)),
-		app.Title("discord-szx"),
+		app.Title(config.Title()),
 		app.MinSize(unit.Dp(420), unit.Dp(320)),
 		app.MaxSize(unit.Dp(420), unit.Dp(320)),
 	)
@@ -123,6 +129,10 @@ func Run() {
 	// Detect Discord and proxy asynchronously so the window appears
 	// immediately instead of freezing for up to several seconds.
 	go ui.detect()
+
+	// Continuously watch whether Discord is running so the "force" control
+	// surfaces automatically (and hides again when Discord is closed).
+	go ui.watchDiscord()
 
 	go func() {
 		var ops op.Ops
@@ -142,6 +152,7 @@ func Run() {
 					ui.hwnd = e.HWND
 				}
 			case app.DestroyEvent:
+				close(ui.stopChan)
 				os.Exit(0)
 			}
 		}
@@ -195,7 +206,7 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 
 func (ui *UI) titleRow(gtx layout.Context) layout.Dimensions {
 	return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(20), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		lbl := material.H6(ui.theme, "discord-szx")
+		lbl := material.H6(ui.theme, config.AppName)
 		lbl.Color = colText
 		return lbl.Layout(gtx)
 	})
@@ -355,11 +366,21 @@ func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 }
 
 func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
+	ui.mu.Lock()
+	running := ui.discordRunning
+	ui.mu.Unlock()
+
+	// The force control is only relevant while Discord is running and is
+	// holding file locks; keep it hidden otherwise to reduce clutter.
+	if !running {
+		return layout.Dimensions{}
+	}
+
 	return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			cb := material.CheckBox(ui.theme, &ui.chkForce, "Принудительно (Discord запущен)")
-			cb.Color = colTextDim
-			cb.IconColor = colAccent
+			cb := material.CheckBox(ui.theme, &ui.chkForce, "Discord запущен — установить принудительно")
+			cb.Color = colRed
+			cb.IconColor = colRed
 			cb.TextSize = unit.Sp(12)
 			return cb.Layout(gtx)
 		})
@@ -448,6 +469,41 @@ func (ui *UI) detect() {
 	ui.detecting = false
 	ui.mu.Unlock()
 	ui.window.Invalidate()
+}
+
+// watchDiscord polls whether the detected Discord channel is running and
+// repaints the UI only when the state changes, so the force control can
+// appear/disappear without the user clicking anything.
+func (ui *UI) watchDiscord() {
+	ticker := time.NewTicker(1500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ui.stopChan:
+			return
+		case <-ticker.C:
+			ui.mu.Lock()
+			install := ui.install
+			prev := ui.discordRunning
+			ui.mu.Unlock()
+			if install == nil {
+				if prev {
+					ui.mu.Lock()
+					ui.discordRunning = false
+					ui.mu.Unlock()
+					ui.window.Invalidate()
+				}
+				continue
+			}
+			running := deploy.IsDiscordRunning(install.Channel)
+			if running != prev {
+				ui.mu.Lock()
+				ui.discordRunning = running
+				ui.mu.Unlock()
+				ui.window.Invalidate()
+			}
+		}
+	}
 }
 
 func (ui *UI) doInstall(force bool) {

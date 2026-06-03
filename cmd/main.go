@@ -23,7 +23,7 @@ func main() {
 	noVerify := flag.Bool("no-verify", false, "Skip post-deploy verification")
 	flag.Parse()
 
-	fmt.Println("discord-szx — Discord proxy deployer")
+	fmt.Printf("%s — Discord proxy deployer\n", config.Title())
 	fmt.Println()
 
 	// --- Proxy Detection ---
