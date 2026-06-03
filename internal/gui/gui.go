@@ -1,10 +1,12 @@
 package gui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
 	"image/color"
+	_ "image/png"
 	"os"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"discord-szx/internal/assets"
 	"discord-szx/internal/config"
 	"discord-szx/internal/deploy"
 	"discord-szx/internal/discord"
@@ -54,6 +57,7 @@ type UI struct {
 	theme    *material.Theme
 	window   *app.Window
 	stopChan chan struct{}
+	logoOp   paint.ImageOp
 
 	// mu guards all mutable state below, which is written from worker
 	// goroutines (detection, install, uninstall) and read by the render loop.
@@ -100,12 +104,18 @@ func Run(noRelaunch bool) {
 		startPhase = phasePrompt
 	}
 
+	var logoOp paint.ImageOp
+	if img, _, err := image.Decode(bytes.NewReader(assets.LogoPNG)); err == nil {
+		logoOp = paint.NewImageOp(img)
+	}
+
 	cfg := config.Default()
 	ui := &UI{
 		cfg:       cfg,
 		detecting: true,
 		stopChan:  make(chan struct{}),
 		phase:     startPhase,
+		logoOp:    logoOp,
 	}
 
 	th := material.NewTheme()
@@ -227,6 +237,25 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 func (ui *UI) titleRow(gtx layout.Context) layout.Dimensions {
 	return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(20), Right: unit.Dp(20), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if ui.logoOp.Size().X == 0 {
+					return layout.Dimensions{}
+				}
+				img := widget.Image{
+					Src: ui.logoOp,
+					Fit: widget.Contain,
+				}
+				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(28))
+				gtx.Constraints.Max.Y = gtx.Dp(unit.Dp(28))
+				gtx.Constraints.Min = gtx.Constraints.Max
+				return img.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if ui.logoOp.Size().X == 0 {
+					return layout.Dimensions{}
+				}
+				return layout.Spacer{Width: unit.Dp(10)}.Layout(gtx)
+			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				lbl := material.H6(ui.theme, config.DisplayName)
 				lbl.Color = colText

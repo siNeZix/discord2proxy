@@ -19,7 +19,8 @@ ifeq ($(strip $(VERSION)),)
 VERSION := dev
 endif
 VERSIONPKG := discord-szx/internal/config
-LDFLAGS    := -s -w -X $(VERSIONPKG).Version=$(VERSION)
+VERSION_CLEAN := $(patsubst v%,%,$(VERSION))
+LDFLAGS    := -s -w -X $(VERSIONPKG).Version=$(VERSION_CLEAN)
 
 .PHONY: all build build-gui build-setup build-setup-upx clean
 

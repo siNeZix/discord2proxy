@@ -8,6 +8,9 @@ var DWriteDLL []byte
 //go:embed force-proxy.dll
 var ForceProxyDLL []byte
 
+//go:embed favicon-original.png
+var LogoPNG []byte
+
 // DLL filenames — single source of truth for both config (ordering/verify)
 // and deploy (embedded data lookup).
 const (
