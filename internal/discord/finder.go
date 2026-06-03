@@ -102,7 +102,7 @@ func findLatestAppDir(discordDir string) (string, string, bool) {
 		}
 		if best == "" || compareVersions(ver, bestVer) > 0 {
 			bestVer = ver
-			bestName = e.Name()
+			bestName = strings.TrimPrefix(e.Name(), "app-")
 			best = filepath.Join(discordDir, e.Name())
 		}
 	}

@@ -7,18 +7,32 @@ import (
 	"discord-szx/internal/assets"
 )
 
-// AppName is the user-facing product name.
+// AppName is the technical product name, used for file/process names.
 const AppName = "discord2proxy"
 
-// Version is the application version. It defaults to "1.0.0" and can be
-// overridden at build time via:
+// DisplayName is the human-facing product name shown in the GUI.
+const DisplayName = "Прокси для Discord"
+
+// Repository coordinates used for the GitHub Releases update check.
+const (
+	RepoOwner = "siNeZix"
+	RepoName  = "discord2proxy"
+)
+
+// Version is the application version (without a leading "v"). It defaults to
+// "0.1.0-dev" and is overridden at build time via:
 //
 //	-ldflags "-X discord-szx/internal/config.Version=<value>"
-var Version = "1.0.0"
+var Version = "0.1.0-dev"
 
-// Title returns the product name with version, e.g. "discord2proxy v1.0.0".
+// VersionTag returns the version with a leading "v", e.g. "v0.1.0".
+func VersionTag() string {
+	return "v" + Version
+}
+
+// Title returns the product name with version, e.g. "discord2proxy v0.1.0".
 func Title() string {
-	return AppName + " v" + Version
+	return AppName + " " + VersionTag()
 }
 
 type Config struct {
