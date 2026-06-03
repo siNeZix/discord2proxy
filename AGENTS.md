@@ -2,6 +2,11 @@
 
 Discord SOCKS5 proxy deployer for Windows. (Go module path remains `discord-szx`.) Embeds DLLs into Discord's app directory to force proxy routing through v2ray/nekobox.
 
+## Инструкции для AI Агента (AI Agent Instructions)
+
+- **Язык общения**: Всегда общайся с пользователем исключительно на русском языке. Ответы должны быть лаконичными, без лишней вежливости и вводных фраз, но технически точными и полными.
+- **Соблюдение соглашений**: Строго следуй архитектуре проекта, структуре файлов и стилю кодирования. перед изменениями читай связанные файлы.
+
 ## Build
 
 ```sh
