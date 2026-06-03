@@ -93,10 +93,13 @@ func InstallSelf() error {
 // returns nil; the caller is responsible for terminating the current process.
 func RelaunchInstalled() error {
 	exe := InstalledExePath()
+	// Pass nil files or empty slice so that the new process is completely detached
+	// and doesn't inherit open handles (like stdout/stderr of the calling console/process)
+	// which blocks the parent from exiting/releasing resource locks.
 	proc, err := os.StartProcess(exe, []string{exe, "--no-relaunch"}, &os.ProcAttr{
 		Dir:   InstallDir(),
 		Env:   os.Environ(),
-		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+		Files: []*os.File{nil, nil, nil},
 	})
 	if err != nil {
 		return err
@@ -121,12 +124,27 @@ func Uninstall() error {
 	// directory recursively. rmdir alone deletes the running exe as well, so a
 	// separate `del` is unnecessary. Commands are chained with `&` (not `&&`)
 	// so the rmdir still runs even if the wait command reports a non-zero code.
-	cmd := exec.Command("cmd", "/c", "timeout /t 1 /nobreak >nul & rmdir /q /s "+cmdQuote(InstallDir()))
+	//
+	// We set Dir to a safe location (like Temp or C:\) so that the spawned cmd
+	// process doesn't inherit the installation directory as its working directory,
+	// which would otherwise lock the folder and prevent rmdir from deleting it.
+	cmd := exec.Command("cmd", "/c", "timeout /t 2 /nobreak >nul & rmdir /q /s "+cmdQuote(InstallDir()))
+	cmd.Dir = os.Getenv("TEMP")
+	if cmd.Dir == "" {
+		cmd.Dir = "C:\\"
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 	}
-	_ = cmd.Start()
+	// Use empty/nil files to ensure the cmd process is fully detached
+	// and doesn't hold standard output stream handles of the parent process.
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start self-deletion command: %w", err)
+	}
 
 	return nil
 }

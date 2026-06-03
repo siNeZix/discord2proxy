@@ -21,7 +21,7 @@ import (
 
 // AssetName is the release asset matched and downloaded for self-update. It
 // must stay in sync with the artifact name produced by the release workflow.
-const AssetName = "d2p.exe"
+const AssetName = "discord2proxy-gui.exe"
 
 const releasesLatestURL = "https://api.github.com/repos/%s/%s/releases/latest"
 

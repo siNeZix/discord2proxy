@@ -35,6 +35,8 @@ func main() {
 			messageBox("Ошибка удаления", fmt.Sprintf("Не удалось удалить приложение: %v", err), 0x10)
 			os.Exit(1)
 		}
+		// Allow any scheduled background commands (like self-deletion CMD)
+		// a tiny split second to ensure their handles are initiated before we exit
 		os.Exit(0)
 	}
 
