@@ -46,6 +46,19 @@ jobs:
             -ldflags "-s -w -X discord-szx/internal/config.Version=${{ steps.ver.outputs.version }}" \
             -o build/discord2proxy-setup.exe ./cmd/setup/
 
+      - name: Set up UPX
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          install-only: true
+
+      - name: Build Setup UPX
+        shell: bash
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X discord-szx/internal/config.Version=${{ steps.ver.outputs.version }}" \
+            -o build/discord2proxy-setup-upx.exe ./cmd/setup/
+          upx --best --lzma build/discord2proxy-setup-upx.exe
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -56,3 +69,4 @@ jobs:
             build/discord2proxy-cli.exe
             build/discord2proxy-gui.exe
             build/discord2proxy-setup.exe
+            build/discord2proxy-setup-upx.exe

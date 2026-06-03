@@ -21,6 +21,22 @@ func isRegistryInstalled() bool {
 	return true
 }
 
+// GetInstalledVersion reads the DisplayVersion from the registry.
+// Returns an empty string if not installed or empty.
+func GetInstalledVersion() string {
+	k, err := registry.OpenKey(registry.CURRENT_USER, registryKeyPath, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+
+	val, _, err := k.GetStringValue("DisplayVersion")
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
 func writeRegistry() error {
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, registryKeyPath, registry.SET_VALUE)
 	if err != nil {

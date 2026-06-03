@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/minio/selfupdate"
 
 	"discord-szx/internal/config"
+	"discord-szx/internal/version"
 )
 
 // AssetName is the release asset matched and downloaded for self-update. It
@@ -97,7 +97,7 @@ func CheckLatest(ctx context.Context) (*Release, bool, error) {
 		return rel, false, nil
 	}
 
-	if !isNewer(config.Version, rel.Version) {
+	if !version.IsNewer(config.Version, rel.Version) {
 		return rel, false, nil
 	}
 	return rel, true, nil
@@ -152,58 +152,4 @@ func Restart() error {
 	_ = proc.Release()
 	os.Exit(0)
 	return nil
-}
-
-// isNewer reports whether candidate is a strictly newer version than current.
-// Both are dotted numeric versions; any non-numeric suffix (e.g. "-dev") is
-// treated as the lowest possible value so a "-dev" build always sees releases
-// as newer.
-func isNewer(current, candidate string) bool {
-	if strings.Contains(current, "-dev") {
-		// Remove "-dev" from candidate to check if they are otherwise equal or if candidate is newer.
-		// Since current is a dev build, we always want to offer updates.
-		return true
-	}
-	return compareVersions(parseVersion(candidate), parseVersion(current)) > 0
-}
-
-func parseVersion(v string) []int {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	// Drop any pre-release/build suffix like "-dev" or "+meta".
-	if i := strings.IndexAny(v, "-+"); i >= 0 {
-		v = v[:i]
-	}
-	if v == "" {
-		return nil
-	}
-	parts := strings.Split(v, ".")
-	nums := make([]int, 0, len(parts))
-	for _, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			break
-		}
-		nums = append(nums, n)
-	}
-	return nums
-}
-
-// compareVersions returns >0 if a is newer than b, <0 if older, 0 if equal.
-func compareVersions(a, b []int) int {
-	for i := 0; i < len(a) || i < len(b); i++ {
-		var ai, bi int
-		if i < len(a) {
-			ai = a[i]
-		}
-		if i < len(b) {
-			bi = b[i]
-		}
-		if ai != bi {
-			if ai > bi {
-				return 1
-			}
-			return -1
-		}
-	}
-	return 0
 }
