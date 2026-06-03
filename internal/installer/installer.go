@@ -52,8 +52,10 @@ func IsRunningFromInstallDir() bool {
 	return strings.EqualFold(filepath.Clean(exe), filepath.Clean(target))
 }
 
-// InstallFrom copies the specified executable source to the installation directory, registers in Uninstall, and creates shortcuts.
-func InstallFrom(srcExe string) error {
+// InstallFrom copies the specified executable source to the installation
+// directory, registers in Uninstall, and creates the requested shortcuts.
+// desktop/startMenu select which shortcuts to create.
+func InstallFrom(srcExe string, desktop, startMenu bool) error {
 	dstExe := InstalledExePath()
 	dstDir := InstallDir()
 
@@ -71,21 +73,22 @@ func InstallFrom(srcExe string) error {
 		return fmt.Errorf("failed to register uninstaller: %w", err)
 	}
 
-	// Create shortcuts in Desktop and Start Menu
-	if err := createShortcuts(); err != nil {
+	// Create the requested shortcuts (Desktop and/or Start Menu)
+	if err := createShortcuts(desktop, startMenu); err != nil {
 		return fmt.Errorf("failed to create shortcuts: %w", err)
 	}
 
 	return nil
 }
 
-// InstallSelf copies the currently running executable to the installation directory, registers in Uninstall, and creates shortcuts.
-func InstallSelf() error {
+// InstallSelf copies the currently running executable to the installation
+// directory, registers in Uninstall, and creates the requested shortcuts.
+func InstallSelf(desktop, startMenu bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get current executable: %w", err)
 	}
-	return InstallFrom(exe)
+	return InstallFrom(exe, desktop, startMenu)
 }
 
 // RelaunchInstalled starts the application from the installed directory with the

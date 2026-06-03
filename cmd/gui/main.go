@@ -18,7 +18,7 @@ func main() {
 	flag.Parse()
 
 	if *installFlag {
-		if err := installer.InstallSelf(); err != nil {
+		if err := installer.InstallSelf(true, true); err != nil {
 			messageBox("Ошибка установки", fmt.Sprintf("Не удалось установить приложение: %v", err), 0x10) // MB_ICONERROR
 			os.Exit(1)
 		}

@@ -27,37 +27,12 @@ var (
 // wininet INTERNET_FLAG_* combined for a fresh, uncached, HTTPS-capable request.
 const internetFlags = uintptr(0x80000000 | 0x04000000 | 0x00800000) // RELOAD | DONT_CACHE | SECURE
 
-type progressWriter struct {
-	total      int64
-	downloaded int64
-	lastUpdate time.Time
-}
+// progressFunc reports download progress. total is -1 when the size is unknown.
+type progressFunc func(downloaded, total int64)
 
-func (pw *progressWriter) drawProgress() {
-	const barWidth = 30
-	var pct float64
-	if pw.total > 0 {
-		pct = float64(pw.downloaded) / float64(pw.total)
-	}
-	filled := int(pct * barWidth)
-	if filled > barWidth {
-		filled = barWidth
-	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-
-	// Format sizes as MB
-	downloadedMB := float64(pw.downloaded) / (1024 * 1024)
-	totalMB := float64(pw.total) / (1024 * 1024)
-
-	if pw.total > 0 {
-		fmt.Printf("\r  Скачивание: [%s] %.1f%% (%.2f/%.2f MB)   ", bar, pct*100, downloadedMB, totalMB)
-	} else {
-		fmt.Printf("\r  Скачивание: (%.2f MB)   ", downloadedMB)
-	}
-}
-
-// downloadWininet downloads a URL to a local filepath using wininet.dll
-func downloadWininet(url string, dstPath string) error {
+// downloadWininet downloads a URL to a local filepath using wininet.dll. It
+// reports progress through the optional callback (may be nil).
+func downloadWininet(url string, dstPath string, onProgress progressFunc) error {
 	hInternet, err := internetOpen()
 	if err != nil {
 		return err
@@ -70,9 +45,9 @@ func downloadWininet(url string, dstPath string) error {
 	}
 	defer procInternetCloseHandle.Call(hUrl)
 
-	// Query Content-Length to show a percentage progress bar. With
+	// Query Content-Length to drive a percentage progress bar. With
 	// HTTP_QUERY_FLAG_NUMBER the value is written back as a 32-bit DWORD.
-	var contentLength int64
+	var contentLength int64 = -1
 	var dword uint32
 	dwordLen := uint32(unsafe.Sizeof(dword))
 	// HTTP_QUERY_CONTENT_LENGTH = 5, HTTP_QUERY_FLAG_NUMBER = 0x20000000
@@ -95,9 +70,10 @@ func downloadWininet(url string, dstPath string) error {
 	}
 	defer out.Close()
 
-	pw := &progressWriter{
-		total:      contentLength,
-		lastUpdate: time.Now(),
+	var downloaded int64
+	var lastUpdate time.Time
+	if onProgress != nil {
+		onProgress(0, contentLength)
 	}
 
 	readBuf := make([]byte, 32*1024)
@@ -120,17 +96,18 @@ func downloadWininet(url string, dstPath string) error {
 			return err
 		}
 
-		pw.downloaded += int64(bytesRead)
-		if time.Since(pw.lastUpdate) > 100*time.Millisecond || (pw.total > 0 && pw.downloaded == pw.total) {
-			pw.lastUpdate = time.Now()
-			pw.drawProgress()
+		downloaded += int64(bytesRead)
+		if onProgress != nil {
+			if time.Since(lastUpdate) > 80*time.Millisecond || (contentLength > 0 && downloaded == contentLength) {
+				lastUpdate = time.Now()
+				onProgress(downloaded, contentLength)
+			}
 		}
 	}
 
-	// Always render the final state, then break the progress line.
-	pw.drawProgress()
-	fmt.Println()
-
+	if onProgress != nil {
+		onProgress(downloaded, contentLength)
+	}
 	return nil
 }
 
@@ -222,72 +199,58 @@ func getLatestVersionTagAPI() (string, error) {
 	return sub[1 : endIdx+1], nil
 }
 
-func main() {
-	fmt.Printf("=== %s: Установка ===\n", config.DisplayName)
-
-	// Check if already installed
+// alreadyUpToDate reports whether an up-to-date installation is already present
+// in the system. When true, the caller should relaunch the installed copy
+// instead of downloading anything.
+func alreadyUpToDate() bool {
+	if !installer.IsInstalled() {
+		return false
+	}
 	installedVer := installer.GetInstalledVersion()
-	hasInstallation := installer.IsInstalled()
-
-	if hasInstallation && installedVer != "" {
-		fmt.Printf("Обнаружена установленная версия в системе: %s\n", installedVer)
-		fmt.Println("Проверка наличия обновлений на сервере...")
-
-		latestTag, err := getLatestVersionTagAPI()
-		if err == nil {
-			latestVer := strings.TrimPrefix(latestTag, "v")
-			if !version.IsNewer(installedVer, latestVer) {
-				fmt.Printf("У вас уже установлена последняя версия (%s). Перезапуск...\n", installedVer)
-				time.Sleep(1 * time.Second)
-				if err := installer.RelaunchInstalled(); err != nil {
-					fmt.Fprintf(os.Stderr, "Не удалось запустить установленное приложение: %v\n", err)
-					os.Exit(1)
-				}
-				os.Exit(0)
-			} else {
-				fmt.Printf("Доступна новая версия: %s (у вас: %s). Начинаем обновление...\n", latestVer, installedVer)
-			}
-		} else {
-			// If we failed to get version online (e.g. offline), let's fallback to launching installed app!
-			fmt.Printf("Не удалось связаться с сервером обновлений (%v). Запуск локальной версии...\n", err)
-			time.Sleep(1 * time.Second)
-			if err := installer.RelaunchInstalled(); err == nil {
-				os.Exit(0)
-			}
-		}
+	if installedVer == "" {
+		return false
 	}
 
-	fmt.Println("Запуск скачивания последней версии...")
+	latestTag, err := getLatestVersionTagAPI()
+	if err != nil {
+		// Offline / API unreachable: prefer launching the local copy over
+		// failing the whole setup.
+		return true
+	}
+	latestVer := strings.TrimPrefix(latestTag, "v")
+	return !version.IsNewer(installedVer, latestVer)
+}
 
+// runInstall downloads the latest GUI build and installs it into the system,
+// creating the requested shortcuts. Progress is reported via onProgress.
+func runInstall(desktop, startMenu bool, onProgress progressFunc) error {
 	tmpFile, err := os.CreateTemp("", "d2p-*.exe")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка создания временного файла: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("создание временного файла: %w", err)
 	}
 	tempExe := tmpFile.Name()
-	tmpFile.Close() // Close it so wininet can overwrite/write to it safely
+	tmpFile.Close() // Close it so wininet can write to it safely.
 	defer os.Remove(tempExe)
 
-	assetURL := getLatestAssetURL()
-
-	err = downloadWininet(assetURL, tempExe)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nОшибка при скачивании файла: %v\n", err)
-		os.Exit(1)
+	if err := downloadWininet(getLatestAssetURL(), tempExe, onProgress); err != nil {
+		return fmt.Errorf("скачивание: %w", err)
 	}
 
-	fmt.Println("Выполнение установки в систему...")
+	if err := installer.InstallFrom(tempExe, desktop, startMenu); err != nil {
+		return fmt.Errorf("установка: %w", err)
+	}
+	return nil
+}
 
-	if err := installer.InstallFrom(tempExe); err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка установки: %v\n", err)
-		os.Exit(1)
+func main() {
+	// If an up-to-date copy is already installed, just relaunch it without
+	// showing the installer window at all.
+	if alreadyUpToDate() {
+		if err := installer.RelaunchInstalled(); err == nil {
+			os.Exit(0)
+		}
+		// Fall through to the window on relaunch failure.
 	}
 
-	fmt.Println("Установка завершена успешно! Запуск установленного приложения...")
-
-	// Launch installed GUI
-	if err := installer.RelaunchInstalled(); err != nil {
-		fmt.Fprintf(os.Stderr, "Не удалось запустить установленное приложение: %v\n", err)
-		os.Exit(1)
-	}
+	runWindow()
 }

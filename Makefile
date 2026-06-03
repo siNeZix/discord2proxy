@@ -33,10 +33,10 @@ build-gui:
 	$(GO) build -ldflags "$(LDFLAGS) -H=windowsgui" -o $(BUILDDIR)/$(BINARYGUI)$(EXT) ./cmd/gui/
 
 build-setup:
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BUILDDIR)/$(BINARYSETUP)$(EXT) ./cmd/setup/
+	$(GO) build -ldflags "$(LDFLAGS) -H=windowsgui" -o $(BUILDDIR)/$(BINARYSETUP)$(EXT) ./cmd/setup/
 
 build-setup-upx:
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BUILDDIR)/$(BINARYSETUPUPX)$(EXT) ./cmd/setup/
+	$(GO) build -ldflags "$(LDFLAGS) -H=windowsgui" -o $(BUILDDIR)/$(BINARYSETUPUPX)$(EXT) ./cmd/setup/
 ifneq ($(UPX),)
 	upx --best --lzma $(BUILDDIR)/$(BINARYSETUPUPX)$(EXT)
 else

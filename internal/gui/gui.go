@@ -849,7 +849,7 @@ func (ui *UI) doSystemInstall() {
 	ui.mu.Unlock()
 	ui.window.Invalidate()
 
-	if err := installer.InstallSelf(); err != nil {
+	if err := installer.InstallSelf(true, true); err != nil {
 		ui.mu.Lock()
 		ui.busy = false
 		ui.setStatusLocked(fmt.Sprintf("Ошибка установки: %v", err), false)

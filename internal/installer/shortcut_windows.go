@@ -95,7 +95,13 @@ func startMenuLnkPath() string {
 	return filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", config.DisplayName+".lnk")
 }
 
-func createShortcuts() error {
+// createShortcuts writes the requested .lnk files. desktop/startMenu select
+// which targets to create; if both are false it is a no-op.
+func createShortcuts(desktop, startMenu bool) error {
+	if !desktop && !startMenu {
+		return nil
+	}
+
 	// Initialize COM. CoUninitialize must be balanced against a successful
 	// CoInitializeEx only. RPC_E_CHANGED_MODE means COM was already initialized
 	// on this thread with a different mode: we can still use it, but we must NOT
@@ -152,31 +158,37 @@ func createShortcuts() error {
 	}
 	defer syscall.SyscallN(pPF.vtbl.Release, uintptr(unsafe.Pointer(pPF)))
 
-	var saved int
+	var requested, saved int
 	var lastErr error
 
 	// Save Desktop shortcut
-	if desktop := desktopLnkPath(); desktop != "" {
-		if err := saveShortcut(pPF, desktop); err != nil {
-			lastErr = err
-		} else {
-			saved++
+	if desktop {
+		if path := desktopLnkPath(); path != "" {
+			requested++
+			if err := saveShortcut(pPF, path); err != nil {
+				lastErr = err
+			} else {
+				saved++
+			}
 		}
 	}
 
 	// Save Start Menu shortcut
-	if startMenu := startMenuLnkPath(); startMenu != "" {
-		_ = os.MkdirAll(filepath.Dir(startMenu), 0755)
-		if err := saveShortcut(pPF, startMenu); err != nil {
-			lastErr = err
-		} else {
-			saved++
+	if startMenu {
+		if path := startMenuLnkPath(); path != "" {
+			requested++
+			_ = os.MkdirAll(filepath.Dir(path), 0755)
+			if err := saveShortcut(pPF, path); err != nil {
+				lastErr = err
+			} else {
+				saved++
+			}
 		}
 	}
 
 	// Tolerate a single failure (e.g. roaming Start Menu unavailable) as long
 	// as at least one shortcut was written; fail only if none could be created.
-	if saved == 0 && lastErr != nil {
+	if requested > 0 && saved == 0 && lastErr != nil {
 		return fmt.Errorf("failed to save any shortcut: %w", lastErr)
 	}
 

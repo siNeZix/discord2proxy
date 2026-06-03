@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           go build -trimpath \
-            -ldflags "-s -w -X discord-szx/internal/config.Version=${{ steps.ver.outputs.version }}" \
+            -ldflags "-s -w -H=windowsgui -X discord-szx/internal/config.Version=${{ steps.ver.outputs.version }}" \
             -o build/d2p-setup.exe ./cmd/setup/
 
       - name: Set up UPX
@@ -55,7 +55,7 @@ jobs:
         shell: bash
         run: |
           go build -trimpath \
-            -ldflags "-s -w -X discord-szx/internal/config.Version=${{ steps.ver.outputs.version }}" \
+            -ldflags "-s -w -H=windowsgui -X discord-szx/internal/config.Version=${{ steps.ver.outputs.version }}" \
             -o build/d2p-setup-upx.exe ./cmd/setup/
           upx --best --lzma build/d2p-setup-upx.exe
 
