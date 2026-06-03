@@ -1,4 +1,4 @@
-BINARY    := discord2proxy
+BINARY    := discord2proxy-cli
 BINARYGUI := discord2proxy-gui
 BUILDDIR  := build
 

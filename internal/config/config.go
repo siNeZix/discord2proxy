@@ -8,7 +8,7 @@ import (
 )
 
 // AppName is the technical product name, used for file/process names.
-const AppName = "discord2proxy"
+const AppName = "discord2proxy-cli"
 
 // DisplayName is the human-facing product name shown in the GUI.
 const DisplayName = "Прокси для Discord"
