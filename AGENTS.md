@@ -5,7 +5,7 @@ Discord SOCKS5 proxy deployer for Windows. (Go module path remains `discord-szx`
 ## Build
 
 ```sh
-make          # builds both CLI and GUI to build/
+make          # builds CLI, GUI and Setup to build/
 make clean    # removes build/
 ```
 
@@ -16,11 +16,13 @@ Requires Go 1.26+, Windows only.
 ```
 cmd/main.go              — CLI entrypoint (flag-based)
 cmd/gui/main.go          — GUI entrypoint (Gio framework)
+cmd/setup/main.go        — Lightweight Console Setup loader
 internal/assets/         — go:embed DLLs (DWrite.dll, force-proxy.dll)
 internal/config/         — default paths, ports, version, repo coordinates
 internal/deploy/         — deploy/uninstall/verify DLLs + proxy.txt into Discord
 internal/discord/        — find Discord via registry + filesystem
 internal/gui/            — Gio UI (dark theme, Russian localization)
+internal/installer/      — system installation, shortcuts (COM IShellLink), registry (HKCU)
 internal/proxy/          — SOCKS5 detection via handshake on ports 2080/1080
 internal/update/         — GitHub Releases self-update (minio/selfupdate)
 third_party/gioui.org/   — vendored, patched Gio (see "Vendored Gio" below)
@@ -49,7 +51,12 @@ in `Configure`'s `Windowed` case.
 3. **Deploy**: Writes `proxy.txt` (SOCKS5_PROXY_ADDRESS/PORT) + copies embedded DLLs into Discord's `app-x.x.x` directory
 4. **Uninstall**: Removes proxy.txt + DLLs from Discord directory
 5. **GUI**: Gio-based 420x320 window with status cards, install/uninstall buttons, Russian UI
-6. **Self-update**: On startup the GUI queries `GET /repos/siNeZix/discord2proxy/releases/latest`, compares against compiled-in `config.Version`, and (when newer) shows a top-right "Обновить vX.Y.Z" button. Clicking downloads the `discord2proxy-gui.exe` asset and atomically replaces the running binary via `minio/selfupdate`, then relaunches.
+6. **System Install**:
+   - Portable GUI at startup asks whether to install.
+   - If "Install" is clicked: copies itself to `%LocalAppData%\discord2proxy\`, creates Desktop/StartMenu shortcuts via COM `IShellLinkW`, registers in `HKCU\...\Uninstall` (without UAC requirements), and relaunches.
+   - If installed copy is launched from outside target directory (e.g., from old portable path), it automatically relaunches from the installed directory.
+   - `discord2proxy-setup.exe` is a lightweight console tool that downloads latest GUI via HTTP (with console progress bar), installs it and launches.
+7. **Self-update**: On startup the GUI queries `GET /repos/siNeZix/discord2proxy/releases/latest`, compares against compiled-in `config.Version`, and (when newer) shows a top-right "Обновить vX.Y.Z" button. Clicking downloads the `discord2proxy-gui.exe` asset and atomically replaces the running binary via `minio/selfupdate`, then relaunches.
 
 ## Releases
 
@@ -60,7 +67,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds both binaries on `windows-latest` with `-X discord-szx/internal/config.Version=<tag-without-v>`, then publishes a GitHub Release with `discord2proxy.exe` + `discord2proxy-gui.exe` attached.
+The workflow builds all three binaries on `windows-latest` with `-X discord-szx/internal/config.Version=<tag-without-v>`, then publishes a GitHub Release with `discord2proxy.exe`, `discord2proxy-gui.exe` + `discord2proxy-setup.exe` attached.
 
 - Versioning: `config.Version` is stored without a leading `v` (e.g. `0.1.0`); `config.VersionTag()` adds it for display. Keep all surfaces (window/footer/update button/tag) at the same `vX.Y.Z`.
 - The GUI asset MUST stay named `discord2proxy-gui.exe` — `internal/update.AssetName` matches on it.

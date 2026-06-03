@@ -24,8 +24,16 @@ import (
 	"discord-szx/internal/config"
 	"discord-szx/internal/deploy"
 	"discord-szx/internal/discord"
+	"discord-szx/internal/installer"
 	"discord-szx/internal/proxy"
 	"discord-szx/internal/update"
+)
+
+type uiPhase int
+
+const (
+	phaseMain uiPhase = iota
+	phasePrompt
 )
 
 var (
@@ -68,17 +76,36 @@ type UI struct {
 	btnUpdate    widget.Clickable
 	chkForce     widget.Bool
 
+	phase            uiPhase
+	btnPromptInstall widget.Clickable
+	btnPromptNotNow  widget.Clickable
+
 	statusMsg   string
 	statusColor color.NRGBA
 	statusTime  time.Time
 }
 
-func Run() {
+func Run(noRelaunch bool) {
+	if !noRelaunch && installer.IsInstalled() && !installer.IsRunningFromInstallDir() {
+		if err := installer.RelaunchInstalled(); err == nil {
+			// Installed copy launched successfully; hand off and exit so we
+			// don't run a second instance from the portable location.
+			os.Exit(0)
+		}
+		// On failure fall through and keep running from the current location.
+	}
+
+	startPhase := phaseMain
+	if !installer.IsInstalled() && !installer.IsRunningFromInstallDir() {
+		startPhase = phasePrompt
+	}
+
 	cfg := config.Default()
 	ui := &UI{
 		cfg:       cfg,
 		detecting: true,
 		stopChan:  make(chan struct{}),
+		phase:     startPhase,
 	}
 
 	th := material.NewTheme()
@@ -145,14 +172,19 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	paint.Fill(gtx.Ops, colBg)
 
 	ui.mu.Lock()
+	phase := ui.phase
+	ui.mu.Unlock()
+
+	if phase == phasePrompt {
+		return ui.promptLayout(gtx)
+	}
+
+	ui.mu.Lock()
 	canInstall := ui.install != nil && ui.proxyInfo != nil && !ui.busy && !ui.detecting
 	canUninstall := ui.install != nil && ui.installed && !ui.busy && !ui.detecting
 	statusMsg := ui.statusMsg
 	statusColor := ui.statusColor
 	statusTime := ui.statusTime
-	ui.mu.Unlock()
-
-	ui.mu.Lock()
 	canUpdate := ui.updateRel != nil && !ui.updateBusy
 	ui.mu.Unlock()
 
@@ -694,4 +726,117 @@ func (ui *UI) setStatusLocked(msg string, ok bool) {
 		ui.statusColor = colRed
 	}
 	ui.statusTime = time.Now()
+}
+
+func (ui *UI) promptLayout(gtx layout.Context) layout.Dimensions {
+	ui.mu.Lock()
+	busy := ui.busy
+	statusMsg := ui.statusMsg
+	statusColor := ui.statusColor
+	ui.mu.Unlock()
+
+	if ui.btnPromptInstall.Clicked(gtx) && !busy {
+		go ui.doSystemInstall()
+	}
+	if ui.btnPromptNotNow.Clicked(gtx) && !busy {
+		ui.mu.Lock()
+		ui.phase = phaseMain
+		ui.statusMsg = ""
+		ui.mu.Unlock()
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(30), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.H5(ui.theme, "Установка в систему")
+				lbl.Color = colText
+				return lbl.Layout(gtx)
+			})
+		}),
+		layout.Rigid(ui.divider),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(20), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(ui.theme, "Программу рекомендуется установить. Это скопирует её в AppData, добавит ярлыки на Рабочий стол и в Пуск, зарегистрирует в системе для простого удаления и обеспечит авто-запуск из ярлыков.")
+				lbl.Color = colTextDim
+				return lbl.Layout(gtx)
+			})
+		}),
+		layout.Flexed(1, layout.Spacer{}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if statusMsg == "" {
+				return layout.Dimensions{}
+			}
+			return ui.statusBannerDraw(gtx, statusMsg, statusColor)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: unit.Dp(20), Top: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							btn := material.Button(ui.theme, &ui.btnPromptInstall, "Установить")
+							btn.CornerRadius = 8
+							if busy {
+								btn.Background = colDisabled
+								btn.Color = colTextDim
+								gtx = gtx.Disabled()
+							} else {
+								btn.Background = colAccent
+								btn.Color = colText
+							}
+							return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							btn := material.Button(ui.theme, &ui.btnPromptNotNow, "Не сейчас")
+							btn.CornerRadius = 8
+							if busy {
+								btn.Background = colDisabled
+								btn.Color = colTextDim
+								gtx = gtx.Disabled()
+							} else {
+								btn.Background = colAccent2
+								btn.Color = colText
+							}
+							return btn.Layout(gtx)
+						}),
+					)
+				})
+			})
+		}),
+		layout.Rigid(ui.footer),
+	)
+}
+
+func (ui *UI) doSystemInstall() {
+	ui.mu.Lock()
+	ui.busy = true
+	ui.setStatusLocked("Установка в систему...", true)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+
+	if err := installer.InstallSelf(); err != nil {
+		ui.mu.Lock()
+		ui.busy = false
+		ui.setStatusLocked(fmt.Sprintf("Ошибка установки: %v", err), false)
+		ui.mu.Unlock()
+		ui.window.Invalidate()
+		return
+	}
+
+	ui.mu.Lock()
+	ui.setStatusLocked("Установлено! Перезапуск...", true)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+
+	time.Sleep(800 * time.Millisecond)
+	if err := installer.RelaunchInstalled(); err != nil {
+		ui.mu.Lock()
+		ui.busy = false
+		ui.phase = phaseMain
+		ui.setStatusLocked(fmt.Sprintf("Ошибка запуска установленной копии: %v", err), false)
+		ui.mu.Unlock()
+		ui.window.Invalidate()
+		return
+	}
+	// Installed copy launched; exit this portable instance.
+	os.Exit(0)
 }
