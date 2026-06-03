@@ -23,8 +23,24 @@ internal/discord/        — find Discord via registry + filesystem
 internal/gui/            — Gio UI (dark theme, Russian localization)
 internal/proxy/          — SOCKS5 detection via handshake on ports 2080/1080
 internal/update/         — GitHub Releases self-update (minio/selfupdate)
+third_party/gioui.org/   — vendored, patched Gio (see "Vendored Gio" below)
 .github/workflows/       — ci.yml (vet/build/test), release.yml (tag → Release)
 ```
+
+## Vendored Gio
+
+`go.mod` has `replace gioui.org => ./third_party/gioui.org`. The vendored copy is
+Gio v0.9.0 with one local patch in `app/os_windows.go`: the window is centered on
+its monitor's work area at first windowed `Configure` (before `ShowWindow`),
+eliminating the startup jump where the window briefly appeared at the OS default
+top-left corner. Look for the `placed` field on `window` and the centering block
+in `Configure`'s `Windowed` case.
+
+- The whole module is committed (not gitignored) so CI/release builds pick up the
+  patch — `windows-latest` builds use the replace automatically.
+- If bumping Gio: re-copy the upstream module, clear read-only attrs, re-apply the
+  `placed`/centering patch, then `go mod tidy`. Do NOT center on every `Configure`
+  (only the first), or user-initiated moves/resizes would snap back to center.
 
 ## Architecture
 

@@ -8,7 +8,6 @@ import (
 	"os"
 	"sync"
 	"time"
-	"unsafe"
 
 	"gioui.org/app"
 	"gioui.org/font"
@@ -21,7 +20,6 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
-	"golang.org/x/sys/windows"
 
 	"discord-szx/internal/config"
 	"discord-szx/internal/deploy"
@@ -29,35 +27,6 @@ import (
 	"discord-szx/internal/proxy"
 	"discord-szx/internal/update"
 )
-
-var (
-	user32               = windows.NewLazyDLL("user32.dll")
-	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
-	procGetWindowRect    = user32.NewProc("GetWindowRect")
-	procSetWindowPos     = user32.NewProc("SetWindowPos")
-)
-
-const (
-	smCXScreen  = 0
-	smCYScreen  = 1
-	swpNoSize   = 0x0001
-	swpNoZOrder = 0x0004
-)
-
-func centerWindow(hwnd uintptr) {
-	screenW, _, _ := procGetSystemMetrics.Call(smCXScreen)
-	screenH, _, _ := procGetSystemMetrics.Call(smCYScreen)
-
-	var rect windows.Rect
-	procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rect)))
-
-	winW := rect.Right - rect.Left
-	winH := rect.Bottom - rect.Top
-	x := (int32(screenW) - winW) / 2
-	y := (int32(screenH) - winH) / 2
-
-	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), 0, 0, swpNoSize|swpNoZOrder)
-}
 
 var (
 	colBg       = color.NRGBA{R: 0x1E, G: 0x1E, B: 0x2E, A: 0xFF}
@@ -102,8 +71,6 @@ type UI struct {
 	statusMsg   string
 	statusColor color.NRGBA
 	statusTime  time.Time
-	hwnd        uintptr
-	centered    bool
 }
 
 func Run() {
@@ -153,16 +120,19 @@ func Run() {
 				gtx := app.NewContext(&ops, e)
 				ui.layout(gtx)
 				e.Frame(gtx.Ops)
-				if ui.hwnd != 0 && !ui.centered {
-					ui.centered = true
-					hwnd := ui.hwnd
-					w.Run(func() { centerWindow(hwnd) })
-				}
-			case app.Win32ViewEvent:
-				if e.Valid() && ui.hwnd == 0 {
-					ui.hwnd = e.HWND
-				}
+				// Window centering is handled natively by the patched Gio
+				// (third_party/gioui.org) at first windowed placement, so the
+				// window is born centered with no startup jump.
 			case app.DestroyEvent:
+				// Don't tear the process down while a self-update is mid-flight;
+				// update.Apply replaces the binary and update.Restart relaunches
+				// us, so an early os.Exit here would abort the upgrade.
+				ui.mu.Lock()
+				updating := ui.updateBusy
+				ui.mu.Unlock()
+				if updating {
+					continue
+				}
 				close(ui.stopChan)
 				os.Exit(0)
 			}

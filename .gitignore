@@ -9,5 +9,9 @@
 /vendor/
 /build/
 
+# NOTE: third_party/gioui.org is a vendored, patched copy of Gio and MUST be
+# committed (go.mod has `replace gioui.org => ./third_party/gioui.org`).
+# Do not add it here.
+
 .idea/
 .vscode/

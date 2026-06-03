@@ -17,3 +17,9 @@ require (
 	golang.org/x/image v0.26.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
 )
+
+// Use a vendored copy of Gio patched to center the window on its first
+// windowed placement (see third_party/gioui.org/app/os_windows.go). This
+// eliminates the startup jump where the window briefly appears at the OS
+// default top-left position before the app re-centers it.
+replace gioui.org => ./third_party/gioui.org
