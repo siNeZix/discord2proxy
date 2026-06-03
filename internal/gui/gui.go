@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/color"
@@ -26,6 +27,7 @@ import (
 	"discord-szx/internal/deploy"
 	"discord-szx/internal/discord"
 	"discord-szx/internal/proxy"
+	"discord-szx/internal/update"
 )
 
 var (
@@ -88,8 +90,13 @@ type UI struct {
 	busy           bool // install/uninstall in progress
 	discordRunning bool // updated by the background watcher
 
+	// Update state, written by checkUpdate/doUpdate and read by the renderer.
+	updateRel  *update.Release
+	updateBusy bool
+
 	btnInstall   widget.Clickable
 	btnUninstall widget.Clickable
+	btnUpdate    widget.Clickable
 	chkForce     widget.Bool
 
 	statusMsg   string
@@ -134,6 +141,10 @@ func Run() {
 	// surfaces automatically (and hides again when Discord is closed).
 	go ui.watchDiscord()
 
+	// Check for a newer release in the background so the update button can
+	// appear without blocking startup.
+	go ui.checkUpdate()
+
 	go func() {
 		var ops op.Ops
 		for {
@@ -171,12 +182,19 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	statusTime := ui.statusTime
 	ui.mu.Unlock()
 
+	ui.mu.Lock()
+	canUpdate := ui.updateRel != nil && !ui.updateBusy
+	ui.mu.Unlock()
+
 	force := ui.chkForce.Value
 	if ui.btnInstall.Clicked(gtx) && canInstall {
 		go ui.doInstall(force)
 	}
 	if ui.btnUninstall.Clicked(gtx) && canUninstall {
 		go ui.doUninstall(force)
+	}
+	if ui.btnUpdate.Clicked(gtx) && canUpdate {
+		go ui.doUpdate()
 	}
 
 	if statusMsg != "" && statusColor == colGreen && !statusTime.IsZero() && time.Since(statusTime) > 5*time.Second {
@@ -205,11 +223,48 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 }
 
 func (ui *UI) titleRow(gtx layout.Context) layout.Dimensions {
-	return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(20), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		lbl := material.H6(ui.theme, config.AppName)
-		lbl.Color = colText
-		return lbl.Layout(gtx)
+	return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(20), Right: unit.Dp(20), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.H6(ui.theme, config.DisplayName)
+				lbl.Color = colText
+				return lbl.Layout(gtx)
+			}),
+			layout.Flexed(1, layout.Spacer{}.Layout),
+			layout.Rigid(ui.updateButton),
+		)
 	})
+}
+
+// updateButton renders the "⚡ Обновить vX.Y.Z" pill in the top-right corner.
+// It is hidden entirely when no newer release is available.
+func (ui *UI) updateButton(gtx layout.Context) layout.Dimensions {
+	ui.mu.Lock()
+	rel := ui.updateRel
+	busy := ui.updateBusy
+	ui.mu.Unlock()
+
+	if rel == nil {
+		return layout.Dimensions{}
+	}
+
+	label := "Обновить v" + rel.Version
+	if busy {
+		label = "Обновление..."
+	}
+	btn := material.Button(ui.theme, &ui.btnUpdate, label)
+	btn.CornerRadius = 8
+	btn.TextSize = unit.Sp(12)
+	btn.Inset = layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(12), Right: unit.Dp(12)}
+	if busy {
+		btn.Background = colDisabled
+		btn.Color = colTextDim
+		gtx = gtx.Disabled()
+	} else {
+		btn.Background = colAccent
+		btn.Color = colText
+	}
+	return btn.Layout(gtx)
 }
 
 func (ui *UI) divider(gtx layout.Context) layout.Dimensions {
@@ -298,21 +353,40 @@ func (ui *UI) statusCard(gtx layout.Context, label, value string, ok bool) layou
 
 func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
 	ui.mu.Lock()
-	var txt string
-	switch {
-	case ui.detecting:
-		txt = "Поиск Discord и прокси..."
-	case ui.install != nil:
-		txt = fmt.Sprintf("Найден: %s (%s)", ui.install.Channel, ui.install.Version)
-	default:
-		txt = "Discord не найден"
-	}
+	detecting := ui.detecting
+	install := ui.install
+	proxyInfo := ui.proxyInfo
 	ui.mu.Unlock()
 
+	var discordLine, proxyLine string
+	switch {
+	case detecting:
+		discordLine = "Поиск Discord и прокси..."
+	case install != nil:
+		discordLine = fmt.Sprintf("Discord %s %s", install.Channel, install.Version)
+	default:
+		discordLine = "Discord не найден"
+	}
+	if proxyInfo != nil {
+		proxyLine = fmt.Sprintf("Прокси: socks5://%s:%d", proxyInfo.Host, proxyInfo.Port)
+	} else if !detecting {
+		proxyLine = "Прокси: не найден"
+	}
+
+	caption := func(txt string) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Caption(ui.theme, txt)
+			lbl.Color = colTextDim
+			return lbl.Layout(gtx)
+		}
+	}
+
 	return layout.Inset{Left: unit.Dp(20), Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		lbl := material.Caption(ui.theme, txt)
-		lbl.Color = colTextDim
-		return lbl.Layout(gtx)
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(caption(discordLine)),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+			layout.Rigid(caption(proxyLine)),
+		)
 	})
 }
 
@@ -346,6 +420,9 @@ func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 				} else {
 					btn.Background = colDisabled
 					btn.Color = colTextDim
+					// Suppress hover/press events so a non-actionable
+					// button is visibly and functionally inert.
+					gtx = gtx.Disabled()
 				}
 				return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
 			}),
@@ -358,6 +435,8 @@ func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 				} else {
 					btn.Background = colDisabled
 					btn.Color = colTextDim
+					// Nothing to uninstall -> button is inert.
+					gtx = gtx.Disabled()
 				}
 				return btn.Layout(gtx)
 			}),
@@ -417,7 +496,7 @@ func (ui *UI) statusBannerDraw(gtx layout.Context, msg string, col color.NRGBA) 
 func (ui *UI) footer(gtx layout.Context) layout.Dimensions {
 	return layout.SE.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(ui.theme, "by siNeZix")
+			lbl := material.Caption(ui.theme, config.VersionTag()+" · by siNeZix")
 			lbl.Color = colTextDim
 			return lbl.Layout(gtx)
 		})
@@ -503,6 +582,67 @@ func (ui *UI) watchDiscord() {
 				ui.window.Invalidate()
 			}
 		}
+	}
+}
+
+// checkUpdate queries GitHub Releases once on startup and, if a newer build
+// is available, stores it so the update button appears.
+func (ui *UI) checkUpdate() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rel, newer, err := update.CheckLatest(ctx)
+	if err != nil || !newer {
+		return
+	}
+
+	ui.mu.Lock()
+	ui.updateRel = rel
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+}
+
+// doUpdate downloads and applies the pending release, then restarts.
+func (ui *UI) doUpdate() {
+	ui.mu.Lock()
+	if ui.updateRel == nil || ui.updateBusy {
+		ui.mu.Unlock()
+		return
+	}
+	ui.updateBusy = true
+	rel := ui.updateRel
+	ui.mu.Unlock()
+
+	ui.mu.Lock()
+	ui.setStatusLocked("Скачивание обновления...", true)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := update.Apply(ctx, rel); err != nil {
+		ui.mu.Lock()
+		ui.updateBusy = false
+		ui.setStatusLocked(fmt.Sprintf("Ошибка обновления: %v", err), false)
+		ui.mu.Unlock()
+		ui.window.Invalidate()
+		return
+	}
+
+	ui.mu.Lock()
+	ui.setStatusLocked("Обновлено! Перезапуск...", true)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
+
+	// Give the user a brief moment to see the message, then relaunch.
+	time.Sleep(800 * time.Millisecond)
+	if err := update.Restart(); err != nil {
+		ui.mu.Lock()
+		ui.updateBusy = false
+		ui.setStatusLocked(fmt.Sprintf("Перезапустите вручную: %v", err), false)
+		ui.mu.Unlock()
+		ui.window.Invalidate()
 	}
 }
 
