@@ -82,6 +82,10 @@ func CheckLatest(ctx context.Context) (*Release, bool, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return nil, false, err
 	}
+	// Only stable releases are offered. The /releases/latest endpoint never
+	// returns drafts or pre-releases by design; the Draft/Prerelease guard is
+	// a defensive check, not a disabled beta channel. Supporting beta channels
+	// would require switching to GET /releases and channel-aware filtering.
 	if gr.Draft || gr.Prerelease || strings.TrimSpace(gr.TagName) == "" {
 		return nil, false, nil
 	}

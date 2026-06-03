@@ -9,12 +9,13 @@ import (
 
 // IsNewer reports whether candidate is a strictly newer version than current.
 // Both are dotted numeric versions; any non-numeric suffix (e.g. "-dev") is
-// treated as the lowest possible value so a "-dev" build always sees releases
-// as newer.
+// dropped before comparison. A "-dev" build skips the update check entirely
+// regardless of version number, so a developer machine is never prompted to
+// "update" to a stable release.
 func IsNewer(current, candidate string) bool {
 	if strings.Contains(current, "-dev") {
-		// A dev build always wants to offer updates.
-		return true
+		// Dev builds opt out of update prompts entirely.
+		return false
 	}
 	return Compare(Parse(candidate), Parse(current)) > 0
 }
