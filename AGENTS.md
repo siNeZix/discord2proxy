@@ -37,17 +37,21 @@ third_party/gioui.org/   — vendored, patched Gio (see "Vendored Gio" below)
 ## Vendored Gio
 
 `go.mod` has `replace gioui.org => ./third_party/gioui.org`. The vendored copy is
-Gio v0.9.0 with one local patch in `app/os_windows.go`: the window is centered on
-its monitor's work area at first windowed `Configure` (before `ShowWindow`),
-eliminating the startup jump where the window briefly appeared at the OS default
-top-left corner. Look for the `placed` field on `window` and the centering block
-in `Configure`'s `Windowed` case.
+Gio v0.9.0 with local patches:
+1. `app/os_windows.go`: the window is centered on
+   its monitor's work area at first windowed `Configure` (before `ShowWindow`),
+   eliminating the startup jump where the window briefly appeared at the OS default
+   top-left corner. Look for the `placed` field on `window` and the centering block
+   in `Configure`'s `Windowed` case.
+2. `widget/material/checkable.go`: the hover indicator (ellipse background on
+   checkboxes/radiobuttons) is dimmed and neutralized (changed from alpha-70 of
+   the accent/red color to a soft grey-blue color with alpha-18) to avoid an overly
+   distracting, "eye-straining" neon glow when mouse-overing checkboxes.
 
 - The whole module is committed (not gitignored) so CI/release builds pick up the
-  patch — `windows-latest` builds use the replace automatically.
+  patches — `windows-latest` builds use the replace automatically.
 - If bumping Gio: re-copy the upstream module, clear read-only attrs, re-apply the
-  `placed`/centering patch, then `go mod tidy`. Do NOT center on every `Configure`
-  (only the first), or user-initiated moves/resizes would snap back to center.
+  centering patch and the checkable hover patch, then `go mod tidy`.
 
 ## Architecture
 

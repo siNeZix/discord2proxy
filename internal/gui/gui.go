@@ -79,6 +79,8 @@ type UI struct {
 	btnUninstall widget.Clickable
 	btnUpdate    widget.Clickable
 	chkForce     widget.Bool
+	chkDesktop   widget.Bool
+	chkStartMenu widget.Bool
 
 	phase            uiPhase
 	btnPromptInstall widget.Clickable
@@ -117,6 +119,8 @@ func Run(noRelaunch bool) {
 		phase:     startPhase,
 		logoOp:    logoOp,
 	}
+	ui.chkDesktop.Value = true
+	ui.chkStartMenu.Value = true
 
 	th := material.NewTheme()
 	th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(gofont.Regular()))
@@ -229,7 +233,6 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(20)}.Layout(gtx, ui.buttons)
 		}),
 		layout.Rigid(ui.forceRow),
-		layout.Rigid(ui.statusBanner),
 		layout.Flexed(1, ui.footer),
 	)
 }
@@ -389,21 +392,6 @@ func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
 	proxyInfo := ui.proxyInfo
 	ui.mu.Unlock()
 
-	var discordLine, proxyLine string
-	switch {
-	case detecting:
-		discordLine = "Поиск Discord и прокси..."
-	case install != nil:
-		discordLine = fmt.Sprintf("Discord %s %s", install.Channel, install.Version)
-	default:
-		discordLine = "Discord не найден"
-	}
-	if proxyInfo != nil {
-		proxyLine = fmt.Sprintf("Прокси: socks5://%s:%d", proxyInfo.Host, proxyInfo.Port)
-	} else if !detecting {
-		proxyLine = "Прокси: не найден"
-	}
-
 	caption := func(txt string) layout.Widget {
 		return func(gtx layout.Context) layout.Dimensions {
 			lbl := material.Caption(ui.theme, txt)
@@ -412,11 +400,38 @@ func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
-	return layout.Inset{Left: unit.Dp(20), Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(caption(discordLine)),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
-			layout.Rigid(caption(proxyLine)),
+	if detecting {
+		return layout.Inset{Left: unit.Dp(20), Right: unit.Dp(20), Top: unit.Dp(4)}.Layout(gtx, caption("Поиск Discord и прокси..."))
+	}
+
+	var discordLine, proxyLine string
+	switch {
+	case install != nil:
+		discordLine = fmt.Sprintf("%s · %s", install.Channel, install.Version)
+	default:
+		discordLine = "Discord не найден"
+	}
+
+	if proxyInfo != nil {
+		proxyLine = fmt.Sprintf("socks5://%s:%d", proxyInfo.Host, proxyInfo.Port)
+	} else {
+		proxyLine = "прокси не найден"
+	}
+
+	return layout.Inset{Left: unit.Dp(20), Right: unit.Dp(20), Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		gap := gtx.Dp(14)
+		cardW := (gtx.Constraints.Max.X - gap*2) / 3
+
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Max.X = cardW
+				gtx.Constraints.Min.X = cardW
+				return caption(discordLine)(gtx)
+			}),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return caption(proxyLine)(gtx)
+			}),
 		)
 	})
 }
@@ -498,46 +513,69 @@ func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
 			cb := material.CheckBox(ui.theme, &ui.chkForce, label)
 			cb.Color = colRed
 			cb.IconColor = colRed
-			cb.TextSize = unit.Sp(12)
+			cb.Size = unit.Dp(19)
+			cb.TextSize = unit.Sp(11.5)
 			return cb.Layout(gtx)
 		})
 	})
 }
 
-func (ui *UI) statusBanner(gtx layout.Context) layout.Dimensions {
-	ui.mu.Lock()
-	msg := ui.statusMsg
-	col := ui.statusColor
-	ui.mu.Unlock()
-	if msg == "" {
-		return layout.Dimensions{}
-	}
-	return ui.statusBannerDraw(gtx, msg, col)
-}
-
 func (ui *UI) statusBannerDraw(gtx layout.Context, msg string, col color.NRGBA) layout.Dimensions {
 	return layout.Inset{Top: unit.Dp(8), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		h := gtx.Dp(28)
-		w := gtx.Constraints.Max.X
 		r := gtx.Dp(6)
 
-		paint.FillShape(gtx.Ops, colBg2, clip.UniformRRect(image.Rect(0, 0, w, h), r).Op(gtx.Ops))
-
-		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(ui.theme, msg)
-			lbl.Color = col
-			return lbl.Layout(gtx)
+		// Record the child dimensions to draw the background dynamically
+		macro := op.Record(gtx.Ops)
+		dims := layout.Inset{
+			Top:    unit.Dp(6),
+			Bottom: unit.Dp(6),
+			Left:   unit.Dp(10),
+			Right:  unit.Dp(10),
+		}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Caption(ui.theme, msg)
+				lbl.Color = col
+				lbl.TextSize = unit.Sp(11)
+				return lbl.Layout(gtx)
+			})
 		})
+		call := macro.Stop()
+
+		// Draw background of matching size
+		paint.FillShape(gtx.Ops, colBg2, clip.UniformRRect(image.Rect(0, 0, dims.Size.X, dims.Size.Y), r).Op(gtx.Ops))
+		call.Add(gtx.Ops)
+
+		return dims
 	})
 }
 
 func (ui *UI) footer(gtx layout.Context) layout.Dimensions {
-	return layout.SE.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(ui.theme, config.VersionTag()+" · by siNeZix")
-			lbl.Color = colTextDim
-			return lbl.Layout(gtx)
-		})
+	ui.mu.Lock()
+	msg := ui.statusMsg
+	col := ui.statusColor
+	ui.mu.Unlock()
+
+	return layout.S.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.End}.Layout(gtx,
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				if msg == "" {
+					return layout.Spacer{}.Layout(gtx)
+				}
+				return layout.Inset{Left: unit.Dp(20), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Caption(ui.theme, msg)
+					lbl.Color = col
+					lbl.TextSize = unit.Sp(11)
+					return lbl.Layout(gtx)
+				})
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Bottom: unit.Dp(8), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Caption(ui.theme, config.VersionTag()+" · by siNeZix")
+					lbl.Color = colTextDim
+					return lbl.Layout(gtx)
+				})
+			}),
+		)
 	})
 }
 
@@ -772,7 +810,7 @@ func (ui *UI) promptLayout(gtx layout.Context) layout.Dimensions {
 	ui.mu.Unlock()
 
 	if ui.btnPromptInstall.Clicked(gtx) && !busy {
-		go ui.doSystemInstall()
+		go ui.doSystemInstall(ui.chkDesktop.Value, ui.chkStartMenu.Value)
 	}
 	if ui.btnPromptNotNow.Clicked(gtx) && !busy {
 		ui.mu.Lock()
@@ -792,9 +830,30 @@ func (ui *UI) promptLayout(gtx layout.Context) layout.Dimensions {
 		layout.Rigid(ui.divider),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(20), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(ui.theme, "Программу рекомендуется установить. Это скопирует её в AppData, добавит ярлыки на Рабочий стол и в Пуск, зарегистрирует в системе для простого удаления и обеспечит авто-запуск из ярлыков.")
+				lbl := material.Body2(ui.theme, "Программу рекомендуется установить.")
 				lbl.Color = colTextDim
 				return lbl.Layout(gtx)
+			})
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(12), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						cb := material.CheckBox(ui.theme, &ui.chkDesktop, "Создать ярлык на Рабочем столе")
+						cb.Color = colText
+						cb.IconColor = colAccent
+						cb.TextSize = unit.Sp(13)
+						return cb.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						cb := material.CheckBox(ui.theme, &ui.chkStartMenu, "Создать ярлык в меню Пуск")
+						cb.Color = colText
+						cb.IconColor = colAccent
+						cb.TextSize = unit.Sp(13)
+						return cb.Layout(gtx)
+					}),
+				)
 			})
 		}),
 		layout.Flexed(1, layout.Spacer{}.Layout),
@@ -842,14 +901,14 @@ func (ui *UI) promptLayout(gtx layout.Context) layout.Dimensions {
 	)
 }
 
-func (ui *UI) doSystemInstall() {
+func (ui *UI) doSystemInstall(desktop, startMenu bool) {
 	ui.mu.Lock()
 	ui.busy = true
 	ui.setStatusLocked("Установка в систему...", true)
 	ui.mu.Unlock()
 	ui.window.Invalidate()
 
-	if err := installer.InstallSelf(true, true); err != nil {
+	if err := installer.InstallSelf(desktop, startMenu); err != nil {
 		ui.mu.Lock()
 		ui.busy = false
 		ui.setStatusLocked(fmt.Sprintf("Ошибка установки: %v", err), false)

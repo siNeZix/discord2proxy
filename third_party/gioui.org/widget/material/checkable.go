@@ -49,7 +49,7 @@ func (c *checkable) layout(gtx layout.Context, checked, hovered bool) layout.Dim
 						return dims
 					}
 
-					background := f32color.MulAlpha(c.IconColor, 70)
+					background := f32color.MulAlpha(color.NRGBA{R: 0x80, G: 0x80, B: 0x90, A: 0xFF}, 18)
 
 					b := image.Rectangle{Max: image.Pt(size, size)}
 					paint.FillShape(gtx.Ops, background, clip.Ellipse(b).Op(gtx.Ops))
