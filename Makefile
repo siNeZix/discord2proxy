@@ -1,7 +1,7 @@
-BINARY    := discord2proxy-cli
-BINARYGUI := discord2proxy-gui
-BINARYSETUP := discord2proxy-setup
-BINARYSETUPUPX := discord2proxy-setup-upx
+BINARY    := d2p-cli
+BINARYGUI := d2p
+BINARYSETUP := d2p-setup
+BINARYSETUPUPX := d2p-setup-upx
 BUILDDIR  := build
 
 ifeq ($(OS),Windows_NT)

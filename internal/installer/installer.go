@@ -23,7 +23,7 @@ func InstallDir() string {
 
 // InstalledExePath returns the path to the installed GUI binary inside the install directory.
 func InstalledExePath() string {
-	return filepath.Join(InstallDir(), "discord2proxy-gui.exe")
+	return filepath.Join(InstallDir(), "d2p.exe")
 }
 
 // IsInstalled checks if the application is installed in the system by verifying the registry key and the executable.

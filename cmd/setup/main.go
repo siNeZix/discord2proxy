@@ -137,7 +137,7 @@ func downloadWininet(url string, dstPath string) error {
 // internetOpen initializes a wininet session with a direct (non-proxied)
 // connection. The caller must close the returned handle.
 func internetOpen() (uintptr, error) {
-	agentPtr, _ := syscall.UTF16PtrFromString("discord2proxy-setup")
+	agentPtr, _ := syscall.UTF16PtrFromString(config.AppName)
 	// InternetOpenW(lpszAgent, dwAccessType=INTERNET_OPEN_TYPE_PRECONFIG, ...)
 	// 0 = PRECONFIG: honor the system/IE proxy settings (corp networks).
 	h, _, callErr := procInternetOpen.Call(
@@ -169,7 +169,7 @@ func internetOpenURL(hInternet uintptr, url string) (uintptr, error) {
 // getLatestAssetURL builds the stable redirect URL for the latest GUI asset.
 func getLatestAssetURL() string {
 	// Asset name must match internal/update.AssetName and the release workflow.
-	return fmt.Sprintf("https://github.com/%s/%s/releases/latest/download/discord2proxy-gui.exe", config.RepoOwner, config.RepoName)
+	return fmt.Sprintf("https://github.com/%s/%s/releases/latest/download/d2p.exe", config.RepoOwner, config.RepoName)
 }
 
 // getLatestVersionTagAPI fetches the latest release tag via the GitHub API,
@@ -259,7 +259,7 @@ func main() {
 
 	fmt.Println("Запуск скачивания последней версии...")
 
-	tmpFile, err := os.CreateTemp("", "discord2proxy-gui-*.exe")
+	tmpFile, err := os.CreateTemp("", "d2p-*.exe")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка создания временного файла: %v\n", err)
 		os.Exit(1)

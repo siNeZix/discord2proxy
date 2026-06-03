@@ -10,6 +10,11 @@ import (
 // AppName is the technical product name, used for file/process names.
 const AppName = "discord2proxy-cli"
 
+// ProductName is the canonical product name used in user-facing strings
+// (e.g. the window/footer title). Kept distinct from AppName, which carries
+// the "-cli" suffix for the CLI binary.
+const ProductName = "discord2proxy"
+
 // DisplayName is the human-facing product name shown in the GUI.
 const DisplayName = "Прокси для Discord"
 
@@ -32,7 +37,7 @@ func VersionTag() string {
 
 // Title returns the product name with version, e.g. "discord2proxy v0.1.0".
 func Title() string {
-	return AppName + " " + VersionTag()
+	return ProductName + " " + VersionTag()
 }
 
 type Config struct {

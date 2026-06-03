@@ -55,8 +55,8 @@ in `Configure`'s `Windowed` case.
    - Portable GUI at startup asks whether to install.
    - If "Install" is clicked: copies itself to `%LocalAppData%\discord2proxy\`, creates Desktop/StartMenu shortcuts via COM `IShellLinkW`, registers in `HKCU\...\Uninstall` (without UAC requirements), and relaunches.
    - If installed copy is launched from outside target directory (e.g., from old portable path), it automatically relaunches from the installed directory.
-   - `discord2proxy-setup.exe` is a lightweight console tool that downloads latest GUI via HTTP (with console progress bar), installs it and launches.
-7. **Self-update**: On startup the GUI queries `GET /repos/siNeZix/discord2proxy/releases/latest`, compares against compiled-in `config.Version`, and (when newer) shows a top-right "Обновить vX.Y.Z" button. Clicking downloads the `discord2proxy-gui.exe` asset and atomically replaces the running binary via `minio/selfupdate`, then relaunches.
+    - `d2p-setup.exe` is a lightweight console tool that downloads latest GUI via HTTP (with console progress bar), installs it and launches.
+7. **Self-update**: On startup the GUI queries `GET /repos/siNeZix/discord2proxy/releases/latest`, compares against compiled-in `config.Version`, and (when newer) shows a top-right "Обновить vX.Y.Z" button. Clicking downloads the `d2p.exe` asset and atomically replaces the running binary via `minio/selfupdate`, then relaunches.
 
 ## Releases
 
@@ -67,10 +67,10 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds all three binaries on `windows-latest` with `-X discord-szx/internal/config.Version=<tag-without-v>`, then publishes a GitHub Release with `discord2proxy.exe`, `discord2proxy-gui.exe` + `discord2proxy-setup.exe` attached.
+The workflow builds all three binaries on `windows-latest` with `-X discord-szx/internal/config.Version=<tag-without-v>`, then publishes a GitHub Release with `d2p-cli.exe`, `d2p.exe`, `d2p-setup.exe` + `d2p-setup-upx.exe` attached.
 
 - Versioning: `config.Version` is stored without a leading `v` (e.g. `0.1.0`); `config.VersionTag()` adds it for display. Keep all surfaces (window/footer/update button/tag) at the same `vX.Y.Z`.
-- The GUI asset MUST stay named `discord2proxy-gui.exe` — `internal/update.AssetName` matches on it.
+- The GUI asset MUST stay named `d2p.exe` — `internal/update.AssetName` matches on it.
 - `ci.yml` runs `go vet`/`build`/`test` on push & PR to main for pre-release safety.
 
 ## Key Details
