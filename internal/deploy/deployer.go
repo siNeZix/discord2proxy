@@ -1,22 +1,21 @@
 package deploy
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"syscall"
+	"strings"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 
 	"discord-szx/internal/assets"
 	"discord-szx/internal/config"
 	"discord-szx/internal/discord"
 	"discord-szx/internal/proxy"
 )
-
-var hideWindow = &syscall.SysProcAttr{HideWindow: true}
 
 type Deployer struct {
 	Config *config.Config
@@ -47,17 +46,26 @@ func channelExeName(channel string) string {
 }
 
 // isProcessRunning reports whether a process with the given image name is
-// running. On a tasklist failure it fails closed (returns true) so callers
-// don't deploy over a possibly-running, file-locking Discord.
+// running. It walks a Toolhelp32 process snapshot via native Win32 calls, so
+// no child process (tasklist) is spawned. On a snapshot failure it fails
+// closed (returns true) so callers don't deploy over a possibly-running,
+// file-locking Discord.
 func isProcessRunning(exeName string) bool {
-	cmd := exec.Command("tasklist", "/NH", "/FI", "IMAGENAME eq "+exeName)
-	cmd.SysProcAttr = hideWindow
-	out, err := cmd.Output()
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		// Fail closed: assume running rather than risk locked-file writes.
 		return true
 	}
-	return bytes.Contains(out, []byte(exeName))
+	defer windows.CloseHandle(snap)
+
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		if strings.EqualFold(windows.UTF16ToString(e.ExeFile[:]), exeName) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsDiscordRunning reports whether the Discord process for the given channel
@@ -67,13 +75,31 @@ func IsDiscordRunning(channel string) bool {
 	return isProcessRunning(channelExeName(channel))
 }
 
-// killProcess force-terminates all processes with the given image name,
-// including child processes (/T). It is best-effort: taskkill returns a
-// non-zero exit code when no matching process is found, which we ignore.
+// killProcess force-terminates every process with the given image name via
+// native Win32 calls (OpenProcess + TerminateProcess), so no child process
+// (taskkill) is spawned. Discord's helper processes share the same image
+// name, so terminating all matches covers the whole tree. Best-effort:
+// individual open/terminate failures are ignored.
 func killProcess(exeName string) error {
-	cmd := exec.Command("taskkill", "/F", "/IM", exeName, "/T")
-	cmd.SysProcAttr = hideWindow
-	_ = cmd.Run()
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snap)
+
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		if !strings.EqualFold(windows.UTF16ToString(e.ExeFile[:]), exeName) {
+			continue
+		}
+		h, oerr := windows.OpenProcess(windows.PROCESS_TERMINATE, false, e.ProcessID)
+		if oerr != nil {
+			continue
+		}
+		_ = windows.TerminateProcess(h, 1)
+		windows.CloseHandle(h)
+	}
 	return nil
 }
 
@@ -139,9 +165,8 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 }
 
 func (d *Deployer) Verify(install *discord.DiscordInstall) error {
-	files := make([]string, 0, len(d.Config.DLLFiles)+1)
-	files = append(files, d.Config.DLLFiles...)
-	files = append(files, d.Config.ProxyFile)
+	// Same order as Deploy/Uninstall: proxy.txt first, then DLLs.
+	files := append([]string{d.Config.ProxyFile}, d.Config.DLLFiles...)
 	for _, name := range files {
 		p := filepath.Join(install.AppDir, name)
 		info, err := os.Stat(p)
@@ -223,9 +248,17 @@ func writeFile(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// On Windows os.Rename fails if the target exists; remove it first.
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	// Atomically replace the target. os.Rename fails on Windows if the target
+	// exists, and a Remove+Rename leaves a window where the file is missing
+	// (Discord could read a half-applied state). MoveFileEx with
+	// MOVEFILE_REPLACE_EXISTING swaps the file in a single atomic operation.
+	from, err := windows.UTF16PtrFromString(tmpName)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	to, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }

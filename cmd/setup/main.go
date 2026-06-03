@@ -45,6 +45,13 @@ func downloadWininet(url string, dstPath string, onProgress progressFunc) error 
 	}
 	defer procInternetCloseHandle.Call(hUrl)
 
+	// Verify the HTTP status is 200 before writing. On a 404/redirect-to-error
+	// GitHub still returns a response body (an HTML error page), which would
+	// otherwise be silently saved as the "binary".
+	if status, ok := httpStatusCode(hUrl); ok && status != 200 {
+		return fmt.Errorf("HTTP %d при скачивании %s", status, url)
+	}
+
 	// Query Content-Length to drive a percentage progress bar. With
 	// HTTP_QUERY_FLAG_NUMBER the value is written back as a 32-bit DWORD.
 	var contentLength int64 = -1
@@ -111,6 +118,28 @@ func downloadWininet(url string, dstPath string, onProgress progressFunc) error 
 	return nil
 }
 
+// httpStatusCode reads the HTTP status code of an opened wininet request
+// handle via HttpQueryInfoW(HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER).
+// The boolean is false if the query failed (e.g. a non-HTTP handle).
+func httpStatusCode(hUrl uintptr) (int, bool) {
+	var dword uint32
+	dwordLen := uint32(unsafe.Sizeof(dword))
+	// HTTP_QUERY_STATUS_CODE = 19, HTTP_QUERY_FLAG_NUMBER = 0x20000000
+	queryFlag := uintptr(19 | 0x20000000)
+	var index uint32
+	ok, _, _ := procHttpQueryInfo.Call(
+		hUrl,
+		queryFlag,
+		uintptr(unsafe.Pointer(&dword)),
+		uintptr(unsafe.Pointer(&dwordLen)),
+		uintptr(unsafe.Pointer(&index)),
+	)
+	if ok == 0 {
+		return 0, false
+	}
+	return int(dword), true
+}
+
 // internetOpen initializes a wininet session with a direct (non-proxied)
 // connection. The caller must close the returned handle.
 func internetOpen() (uintptr, error) {
@@ -145,7 +174,10 @@ func internetOpenURL(hInternet uintptr, url string) (uintptr, error) {
 
 // getLatestAssetURL builds the stable redirect URL for the latest GUI asset.
 func getLatestAssetURL() string {
-	// В релизах на гитхабе GUI-бинарник называется discord2proxy-gui.exe
+	// ВРЕМЕННО: текущий последний релиз (v0.1.0) публикует GUI как
+	// discord2proxy-gui.exe. release.yml уже переименован на d2p.exe, но новый
+	// релиз ещё не вышел. После публикации релиза с d2p.exe сменить здесь имя
+	// на d2p.exe (и синхронно update.AssetName).
 	return fmt.Sprintf("https://github.com/%s/%s/releases/latest/download/discord2proxy-gui.exe", config.RepoOwner, config.RepoName)
 }
 

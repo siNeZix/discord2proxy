@@ -42,7 +42,9 @@ func detectOnPort(host string, port int) *ProxyInfo {
 	defer conn.Close()
 
 	// Bound both write and read so a hung peer can't block indefinitely.
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return info
+	}
 
 	// SOCKS5 greeting: version 5, 1 method, "no authentication" (0x00).
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
@@ -71,26 +73,6 @@ func VerifyProxy(host string, port int) (*ProxyInfo, error) {
 		return nil, fmt.Errorf("прокси %s:%d не отвечает по SOCKS5", host, port)
 	}
 	return info, nil
-}
-
-func DetectProxies(host string, ports []int) ([]ProxyInfo, error) {
-	var mu sync.Mutex
-	var results []ProxyInfo
-	var wg sync.WaitGroup
-
-	for _, port := range ports {
-		wg.Add(1)
-		go func(p int) {
-			defer wg.Done()
-			info := detectOnPort(host, p)
-			mu.Lock()
-			results = append(results, *info)
-			mu.Unlock()
-		}(port)
-	}
-	wg.Wait()
-
-	return results, nil
 }
 
 // DetectBestProxy probes all ports concurrently and returns the first alive

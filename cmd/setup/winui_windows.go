@@ -151,8 +151,8 @@ const (
 	wmTimer          = 0x0113
 
 	// Timer that animates the indeterminate progress bar (unknown size).
-	timerPulse   = 1
-	pulsePeri_ms = 60
+	timerPulse    = 1
+	pulsePeriodMs = 60
 
 	bnClicked = 0
 
@@ -676,7 +676,7 @@ func (s *setupWindow) onInstallClicked() {
 	procUpdateWindow.Call(s.hwnd)
 
 	// Animate the indeterminate bar until the first real progress arrives.
-	procSetTimer.Call(s.hwnd, timerPulse, pulsePeri_ms, 0)
+	procSetTimer.Call(s.hwnd, timerPulse, pulsePeriodMs, 0)
 	s.setStatus("Скачивание…", clrText)
 
 	go func() {

@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"discord-szx/internal/config"
+	"discord-szx/internal/version"
 )
 
 type DiscordInstall struct {
@@ -66,19 +67,6 @@ func parseAppVersion(name string) []int {
 	return nums
 }
 
-// compareVersions returns >0 if a is newer than b, <0 if older, 0 if equal.
-func compareVersions(a, b []int) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] != b[i] {
-			if a[i] > b[i] {
-				return 1
-			}
-			return -1
-		}
-	}
-	return len(a) - len(b)
-}
-
 func findLatestAppDir(discordDir string) (string, string, bool) {
 	entries, err := os.ReadDir(discordDir)
 	if err != nil {
@@ -100,7 +88,7 @@ func findLatestAppDir(discordDir string) (string, string, bool) {
 		if ver == nil {
 			continue
 		}
-		if best == "" || compareVersions(ver, bestVer) > 0 {
+		if best == "" || version.Compare(ver, bestVer) > 0 {
 			bestVer = ver
 			bestName = strings.TrimPrefix(e.Name(), "app-")
 			best = filepath.Join(discordDir, e.Name())

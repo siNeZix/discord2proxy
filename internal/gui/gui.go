@@ -11,9 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"gioui.org/app"
 	"gioui.org/font"
 	"gioui.org/font/gofont"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -58,6 +61,8 @@ type UI struct {
 	window   *app.Window
 	stopChan chan struct{}
 	logoOp   paint.ImageOp
+	tgOp     paint.ImageOp
+	ghOp     paint.ImageOp
 
 	// mu guards all mutable state below, which is written from worker
 	// goroutines (detection, install, uninstall) and read by the render loop.
@@ -78,6 +83,8 @@ type UI struct {
 	btnInstall   widget.Clickable
 	btnUninstall widget.Clickable
 	btnUpdate    widget.Clickable
+	btnTelegram  widget.Clickable
+	btnGithub    widget.Clickable
 	chkForce     widget.Bool
 	chkDesktop   widget.Bool
 	chkStartMenu widget.Bool
@@ -89,6 +96,8 @@ type UI struct {
 	statusMsg   string
 	statusColor color.NRGBA
 	statusTime  time.Time
+	busyMsg     string
+	busyStart   time.Time
 }
 
 func Run(noRelaunch bool) {
@@ -111,6 +120,14 @@ func Run(noRelaunch bool) {
 		logoOp = paint.NewImageOp(img)
 	}
 
+	var tgOp, ghOp paint.ImageOp
+	if img, _, err := image.Decode(bytes.NewReader(assets.TelegramPNG)); err == nil {
+		tgOp = paint.NewImageOp(img)
+	}
+	if img, _, err := image.Decode(bytes.NewReader(assets.GithubPNG)); err == nil {
+		ghOp = paint.NewImageOp(img)
+	}
+
 	cfg := config.Default()
 	ui := &UI{
 		cfg:       cfg,
@@ -118,6 +135,8 @@ func Run(noRelaunch bool) {
 		stopChan:  make(chan struct{}),
 		phase:     startPhase,
 		logoOp:    logoOp,
+		tgOp:      tgOp,
+		ghOp:      ghOp,
 	}
 	ui.chkDesktop.Value = true
 	ui.chkStartMenu.Value = true
@@ -190,7 +209,7 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	ui.mu.Unlock()
 
 	if phase == phasePrompt {
-		return ui.promptLayout(gtx)
+		return ui.promptLayout(gtx, phase)
 	}
 
 	ui.mu.Lock()
@@ -199,6 +218,8 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	statusMsg := ui.statusMsg
 	statusColor := ui.statusColor
 	statusTime := ui.statusTime
+	busy := ui.busy
+	busyStart := ui.busyStart
 	canUpdate := ui.updateRel != nil && !ui.updateBusy
 	ui.mu.Unlock()
 
@@ -211,6 +232,19 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 	}
 	if ui.btnUpdate.Clicked(gtx) && canUpdate {
 		go ui.doUpdate()
+	}
+	if ui.btnTelegram.Clicked(gtx) {
+		openURL("https://t.me/siNeZix")
+	}
+	if ui.btnGithub.Clicked(gtx) {
+		openURL(fmt.Sprintf("https://github.com/%s/%s", config.RepoOwner, config.RepoName))
+	}
+
+	if busy && !busyStart.IsZero() {
+		since := time.Since(busyStart)
+		if since < time.Second {
+			gtx.Execute(op.InvalidateCmd{At: busyStart.Add(time.Second)})
+		}
 	}
 
 	if statusMsg != "" && statusColor == colGreen && !statusTime.IsZero() && time.Since(statusTime) > 5*time.Second {
@@ -229,11 +263,21 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(14), Bottom: unit.Dp(4)}.Layout(gtx, ui.statusCards)
 		}),
 		layout.Rigid(ui.detailText),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(20)}.Layout(gtx, ui.buttons)
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(380))
+				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(380))
+				return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Center.Layout(gtx, ui.buttons)
+					}),
+					layout.Rigid(ui.forceRow),
+				)
+			})
 		}),
-		layout.Rigid(ui.forceRow),
-		layout.Flexed(1, ui.footer),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return ui.footer(gtx, phase)
+		}),
 	)
 }
 
@@ -283,9 +327,6 @@ func (ui *UI) updateButton(gtx layout.Context) layout.Dimensions {
 	}
 
 	label := "Обновить v" + rel.Version
-	if busy {
-		label = "Обновление..."
-	}
 	btn := material.Button(ui.theme, &ui.btnUpdate, label)
 	btn.CornerRadius = 8
 	btn.TextSize = unit.Sp(12)
@@ -361,7 +402,7 @@ func (ui *UI) statusCard(gtx layout.Context, label, value string, ok bool) layou
 	paint.FillShape(gtx.Ops, dotCol, clip.Ellipse(image.Rect(dotX, dotY, dotX+dotR*2, dotY+dotR*2)).Op(gtx.Ops))
 
 	macro := op.Record(gtx.Ops)
-	dims := layout.Inset{Left: unit.Dp(12), Top: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	layout.Inset{Left: unit.Dp(12), Top: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Caption(ui.theme, label)
 		lbl.Color = colTextDim
 		lbl.Font.Weight = font.Medium
@@ -371,16 +412,13 @@ func (ui *UI) statusCard(gtx layout.Context, label, value string, ok bool) layou
 	call.Add(gtx.Ops)
 
 	macro2 := op.Record(gtx.Ops)
-	dims2 := layout.Inset{Left: unit.Dp(12), Top: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	layout.Inset{Left: unit.Dp(12), Top: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Subtitle2(ui.theme, value)
 		lbl.Color = colText
 		return lbl.Layout(gtx)
 	})
 	call2 := macro2.Stop()
 	call2.Add(gtx.Ops)
-
-	_ = dims
-	_ = dims2
 
 	return layout.Dimensions{Size: image.Pt(w, h)}
 }
@@ -451,43 +489,38 @@ func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 	if installed {
 		installLabel = "Переустановить"
 	}
-	if blocked {
-		installLabel = "Подождите..."
-	}
 
-	return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(ui.theme, &ui.btnInstall, installLabel)
-				btn.CornerRadius = 8
-				if canInstall {
-					btn.Background = colAccent
-					btn.Color = colText
-				} else {
-					btn.Background = colDisabled
-					btn.Color = colTextDim
-					// Suppress hover/press events so a non-actionable
-					// button is visibly and functionally inert.
-					gtx = gtx.Disabled()
-				}
-				return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(ui.theme, &ui.btnUninstall, "Удалить")
-				btn.CornerRadius = 8
-				if canUninstall {
-					btn.Background = colAccent2
-					btn.Color = colText
-				} else {
-					btn.Background = colDisabled
-					btn.Color = colTextDim
-					// Nothing to uninstall -> button is inert.
-					gtx = gtx.Disabled()
-				}
-				return btn.Layout(gtx)
-			}),
-		)
-	})
+	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			btn := material.Button(ui.theme, &ui.btnInstall, installLabel)
+			btn.CornerRadius = 8
+			if canInstall {
+				btn.Background = colAccent
+				btn.Color = colText
+			} else {
+				btn.Background = colDisabled
+				btn.Color = colTextDim
+				// Suppress hover/press events so a non-actionable
+				// button is visibly and functionally inert.
+				gtx = gtx.Disabled()
+			}
+			return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			btn := material.Button(ui.theme, &ui.btnUninstall, "Удалить")
+			btn.CornerRadius = 8
+			if canUninstall {
+				btn.Background = colAccent2
+				btn.Color = colText
+			} else {
+				btn.Background = colDisabled
+				btn.Color = colTextDim
+				// Nothing to uninstall -> button is inert.
+				gtx = gtx.Disabled()
+			}
+			return btn.Layout(gtx)
+		}),
+	)
 }
 
 func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
@@ -500,6 +533,9 @@ func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
 	if !running {
 		return layout.Dimensions{}
 	}
+
+	// Update the bool widget first so the value is fresh when calculating the label text
+	ui.chkForce.Update(gtx)
 
 	// The checkbox label switches to a warning while force is enabled, and
 	// reverts to the original prompt when unchecked.
@@ -549,11 +585,20 @@ func (ui *UI) statusBannerDraw(gtx layout.Context, msg string, col color.NRGBA) 
 	})
 }
 
-func (ui *UI) footer(gtx layout.Context) layout.Dimensions {
+func (ui *UI) footer(gtx layout.Context, phase uiPhase) layout.Dimensions {
 	ui.mu.Lock()
 	msg := ui.statusMsg
 	col := ui.statusColor
+	busy := ui.busy
+	busyMsg := ui.busyMsg
+	busyStart := ui.busyStart
 	ui.mu.Unlock()
+
+	// If busy and more than 1 second has passed, show process status instead
+	if busy && !busyStart.IsZero() && time.Since(busyStart) >= time.Second {
+		msg = busyMsg
+		col = colTextDim
+	}
 
 	return layout.S.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.End}.Layout(gtx,
@@ -570,12 +615,52 @@ func (ui *UI) footer(gtx layout.Context) layout.Dimensions {
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Bottom: unit.Dp(8), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Caption(ui.theme, config.VersionTag()+" · by siNeZix")
-					lbl.Color = colTextDim
-					return lbl.Layout(gtx)
+					return layout.Flex{Axis: layout.Vertical, Alignment: layout.End}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if phase == phasePrompt {
+								return layout.Dimensions{}
+							}
+							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return ui.linkIcon(gtx, &ui.btnTelegram, ui.tgOp)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return ui.linkIcon(gtx, &ui.btnGithub, ui.ghOp)
+								}),
+							)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if phase == phasePrompt {
+								return layout.Dimensions{}
+							}
+							return layout.Spacer{Height: unit.Dp(4)}.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Caption(ui.theme, config.VersionTag()+" · by siNeZix")
+							lbl.Color = colTextDim
+							return lbl.Layout(gtx)
+						}),
+					)
 				})
 			}),
 		)
+	})
+}
+
+// linkIcon renders a small (16dp) clickable icon that shows a hand cursor on
+// hover. Used for the Telegram/GitHub links in the footer.
+func (ui *UI) linkIcon(gtx layout.Context, btn *widget.Clickable, op paint.ImageOp) layout.Dimensions {
+	if op.Size().X == 0 {
+		return layout.Dimensions{}
+	}
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		sz := gtx.Dp(unit.Dp(16))
+		gtx.Constraints.Min = image.Pt(sz, sz)
+		gtx.Constraints.Max = image.Pt(sz, sz)
+		pointer.CursorPointer.Add(gtx.Ops)
+		img := widget.Image{Src: op, Fit: widget.Contain}
+		return img.Layout(gtx)
 	})
 }
 
@@ -639,25 +724,23 @@ func (ui *UI) watchDiscord() {
 		case <-ticker.C:
 			ui.mu.Lock()
 			install := ui.install
-			prev := ui.discordRunning
 			ui.mu.Unlock()
-			if install == nil {
-				if prev {
-					ui.mu.Lock()
-					ui.discordRunning = false
-					ui.mu.Unlock()
-					ui.window.Invalidate()
-				}
-				continue
-			}
-			running := deploy.IsDiscordRunning(install.Channel)
-			if running != prev {
-				ui.mu.Lock()
-				ui.discordRunning = running
-				ui.mu.Unlock()
-				ui.window.Invalidate()
-			}
+
+			running := install != nil && deploy.IsDiscordRunning(install.Channel)
+			ui.setDiscordRunning(running)
 		}
+	}
+}
+
+// setDiscordRunning stores the running flag and repaints only when it changes,
+// so the force control appears/disappears without spurious frames.
+func (ui *UI) setDiscordRunning(running bool) {
+	ui.mu.Lock()
+	changed := ui.discordRunning != running
+	ui.discordRunning = running
+	ui.mu.Unlock()
+	if changed {
+		ui.window.Invalidate()
 	}
 }
 
@@ -690,7 +773,7 @@ func (ui *UI) doUpdate() {
 	ui.mu.Unlock()
 
 	ui.mu.Lock()
-	ui.setStatusLocked("Скачивание обновления...", true)
+	ui.setBusyLocked("Скачивание обновления...")
 	ui.mu.Unlock()
 	ui.window.Invalidate()
 
@@ -728,7 +811,7 @@ func (ui *UI) doInstall(force bool) {
 		ui.mu.Unlock()
 		return
 	}
-	ui.busy = true
+	ui.setBusyLocked("Установка...")
 	install := ui.install
 	proxyInfo := ui.proxyInfo
 	reinstall := ui.installed
@@ -744,9 +827,9 @@ func (ui *UI) doInstall(force bool) {
 		ui.finishStatus(fmt.Sprintf("Ошибка проверки: %v", err), false, false)
 		return
 	}
-	msg := "Прокси установлен! Перезапустите Discord."
+	msg := "Прокси установлен!"
 	if reinstall {
-		msg = "Прокси переустановлен! Перезапустите Discord."
+		msg = "Прокси переустановлен!"
 	}
 	ui.finishStatus(msg, true, true)
 }
@@ -757,7 +840,7 @@ func (ui *UI) doUninstall(force bool) {
 		ui.mu.Unlock()
 		return
 	}
-	ui.busy = true
+	ui.setBusyLocked("Удаление...")
 	install := ui.install
 	ui.mu.Unlock()
 	ui.window.Invalidate()
@@ -767,7 +850,7 @@ func (ui *UI) doUninstall(force bool) {
 		ui.finishStatus(fmt.Sprintf("Ошибка удаления: %v", err), false, false)
 		return
 	}
-	ui.finishStatusInstalled(false, "Прокси удалён! Перезапустите Discord.", true)
+	ui.finishStatusInstalled(false, "Прокси удалён!", true)
 }
 
 // finishStatus clears busy, sets the banner and optionally re-detects the
@@ -800,9 +883,20 @@ func (ui *UI) setStatusLocked(msg string, ok bool) {
 		ui.statusColor = colRed
 	}
 	ui.statusTime = time.Now()
+	// Clear busy state when setting final status
+	ui.busyMsg = ""
+	ui.busyStart = time.Time{}
 }
 
-func (ui *UI) promptLayout(gtx layout.Context) layout.Dimensions {
+func (ui *UI) setBusyLocked(msg string) {
+	ui.busy = true
+	ui.busyMsg = msg
+	ui.busyStart = time.Now()
+	ui.statusMsg = ""
+	ui.statusTime = time.Time{}
+}
+
+func (ui *UI) promptLayout(gtx layout.Context, phase uiPhase) layout.Dimensions {
 	ui.mu.Lock()
 	busy := ui.busy
 	statusMsg := ui.statusMsg
@@ -897,14 +991,15 @@ func (ui *UI) promptLayout(gtx layout.Context) layout.Dimensions {
 				})
 			})
 		}),
-		layout.Rigid(ui.footer),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return ui.footer(gtx, phase)
+		}),
 	)
 }
 
 func (ui *UI) doSystemInstall(desktop, startMenu bool) {
 	ui.mu.Lock()
-	ui.busy = true
-	ui.setStatusLocked("Установка в систему...", true)
+	ui.setBusyLocked("Установка в систему...")
 	ui.mu.Unlock()
 	ui.window.Invalidate()
 
@@ -934,4 +1029,17 @@ func (ui *UI) doSystemInstall(desktop, startMenu bool) {
 	}
 	// Installed copy launched; exit this portable instance.
 	os.Exit(0)
+}
+
+// openURL opens a URL in the user's default browser on Windows via the native
+// ShellExecute call. This avoids spawning a child process (and the associated
+// conhost flicker / render-loop stall) entirely, and handles https/query
+// strings reliably.
+func openURL(u string) {
+	verb, _ := windows.UTF16PtrFromString("open")
+	file, err := windows.UTF16PtrFromString(u)
+	if err != nil {
+		return
+	}
+	_ = windows.ShellExecute(0, verb, file, nil, nil, windows.SW_SHOWNORMAL)
 }
