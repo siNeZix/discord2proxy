@@ -11,6 +11,12 @@ var ForceProxyDLL []byte
 //go:embed favicon-original.png
 var LogoPNG []byte
 
+//go:embed telegram.png
+var TelegramPNG []byte
+
+//go:embed github.png
+var GithubPNG []byte
+
 // DLL filenames — single source of truth for both config (ordering/verify)
 // and deploy (embedded data lookup).
 const (
