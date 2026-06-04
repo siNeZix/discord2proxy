@@ -541,7 +541,7 @@ func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
 	// reverts to the original prompt when unchecked.
 	label := "Discord запущен — установить принудительно"
 	if ui.chkForce.Value {
-		label = "Discord будет закрыт во время установки"
+		label = "Discord будет перезапущен во время установки"
 	}
 
 	return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {

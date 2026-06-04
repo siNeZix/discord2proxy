@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -123,11 +124,36 @@ func forceCloseDiscord(channel string) error {
 	return fmt.Errorf("не удалось завершить Discord (%s)", exe)
 }
 
+// startDiscord relaunches Discord for the channel as a detached process and
+// returns without waiting for it to exit. It prefers the canonical launcher
+// (Update.exe --processStart <exe>) in the install root, falling back to
+// running the channel executable in the app directory directly. Best-effort:
+// a missing launcher/exe surfaces as an error the caller may choose to ignore.
+func startDiscord(install *discord.DiscordInstall) error {
+	exe := channelExeName(install.Channel)
+
+	updatePath := filepath.Join(install.Path, "Update.exe")
+	if _, err := os.Stat(updatePath); err == nil {
+		cmd := exec.Command(updatePath, "--processStart", exe)
+		cmd.Dir = install.Path
+		return cmd.Start()
+	}
+
+	// Fallback: launch the channel executable directly from the app directory.
+	exePath := filepath.Join(install.AppDir, exe)
+	cmd := exec.Command(exePath)
+	cmd.Dir = install.AppDir
+	return cmd.Start()
+}
+
 func formatProxyConfig(host string, port int) []byte {
 	return []byte(fmt.Sprintf("SOCKS5_PROXY_ADDRESS=%s\nSOCKS5_PROXY_PORT=%d\n", host, port))
 }
 
 func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.ProxyInfo) error {
+	// Track whether Discord was force-closed so it can be relaunched after a
+	// successful deploy (the force checkbox promises a restart).
+	restart := false
 	if IsDiscordRunning(install.Channel) {
 		if !d.Force {
 			return fmt.Errorf("Discord запущен — файлы заблокированы. Закройте Discord и попробуйте снова")
@@ -135,6 +161,7 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 		if err := forceCloseDiscord(install.Channel); err != nil {
 			return err
 		}
+		restart = true
 	}
 
 	if d.DryRun {
@@ -159,6 +186,12 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 			return fmt.Errorf("ошибка записи %s в %s: %w", dll, dst, err)
 		}
 		fmt.Printf("  Written %s -> %s (%d bytes)\n", dll, dst, len(data))
+	}
+
+	if restart {
+		if err := startDiscord(install); err != nil {
+			fmt.Printf("  Не удалось перезапустить Discord: %v\n", err)
+		}
 	}
 
 	return nil
@@ -196,6 +229,9 @@ func (d *Deployer) dryRun(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 }
 
 func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
+	// Track whether Discord was force-closed so it can be relaunched after a
+	// successful uninstall (the force checkbox promises a restart).
+	restart := false
 	if IsDiscordRunning(install.Channel) {
 		if !d.Force {
 			return fmt.Errorf("Discord запущен — сначала закройте Discord")
@@ -203,6 +239,7 @@ func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
 		if err := forceCloseDiscord(install.Channel); err != nil {
 			return err
 		}
+		restart = true
 	}
 
 	files := append([]string{d.Config.ProxyFile}, d.Config.DLLFiles...)
@@ -215,6 +252,12 @@ func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
+	}
+
+	if restart {
+		if err := startDiscord(install); err != nil {
+			fmt.Printf("  Не удалось перезапустить Discord: %v\n", err)
+		}
 	}
 	return nil
 }
