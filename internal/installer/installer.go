@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 var hideWindow = &syscall.SysProcAttr{HideWindow: true}
@@ -165,7 +167,12 @@ func copyFileAtomically(src, dst string) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	moved := false
+	defer func() {
+		if !moved {
+			os.Remove(tmpName)
+		}
+	}()
 
 	in, err := os.Open(src)
 	if err != nil {
@@ -186,9 +193,17 @@ func copyFileAtomically(src, dst string) error {
 		return err
 	}
 
-	// On Windows, remove target before rename
-	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+	from, err := windows.UTF16PtrFromString(tmpName)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpName, dst)
+	to, err := windows.UTF16PtrFromString(dst)
+	if err != nil {
+		return err
+	}
+	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+		return err
+	}
+	moved = true
+	return nil
 }

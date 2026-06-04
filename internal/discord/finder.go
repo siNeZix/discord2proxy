@@ -45,6 +45,19 @@ func channelFromPath(p string) string {
 	}
 }
 
+func exeNameForChannel(channel string) string {
+	switch channel {
+	case "ptb":
+		return "DiscordPTB.exe"
+	case "canary":
+		return "DiscordCanary.exe"
+	case "development":
+		return "DiscordDevelopment.exe"
+	default:
+		return "Discord.exe"
+	}
+}
+
 // parseAppVersion extracts numeric version components from an "app-1.0.10000"
 // directory name. Returns nil if the name has no parseable version.
 func parseAppVersion(name string) []int {
@@ -73,6 +86,7 @@ func findLatestAppDir(discordDir string) (string, string, bool) {
 		return "", "", false
 	}
 
+	exeName := exeNameForChannel(channelFromPath(discordDir))
 	var best string
 	var bestName string
 	var bestVer []int
@@ -80,7 +94,7 @@ func findLatestAppDir(discordDir string) (string, string, bool) {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), "app-") {
 			continue
 		}
-		exePath := filepath.Join(discordDir, e.Name(), "Discord.exe")
+		exePath := filepath.Join(discordDir, e.Name(), exeName)
 		if _, err := os.Stat(exePath); err != nil {
 			continue
 		}
