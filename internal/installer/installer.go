@@ -14,6 +14,11 @@ import (
 
 var hideWindow = &syscall.SysProcAttr{HideWindow: true}
 
+var (
+	user32                       = syscall.NewLazyDLL("user32.dll")
+	procAllowSetForegroundWindow = user32.NewProc("AllowSetForegroundWindow")
+)
+
 // InstallDir returns the target installation directory (%LocalAppData%\discord2proxy).
 func InstallDir() string {
 	localAppData := os.Getenv("LocalAppData")
@@ -109,7 +114,21 @@ func RelaunchInstalled() error {
 	if err != nil {
 		return err
 	}
+	// Windows blocks a process from stealing the foreground window unless the
+	// current foreground process explicitly grants it. Since this (portable)
+	// process is the foreground one and is about to exit, hand the right over
+	// to the freshly spawned installed copy by its PID; otherwise its window
+	// opens behind other windows / merely flashes in the taskbar.
+	allowSetForegroundWindow(proc.Pid)
 	return proc.Release()
+}
+
+// allowSetForegroundWindow grants the process with the given PID permission to
+// call SetForegroundWindow successfully, bypassing the Win32 foreground lock.
+// Errors are ignored: this is a best-effort UX nicety, and failure only means
+// the new window may open without focus (the prior behaviour).
+func allowSetForegroundWindow(pid int) {
+	procAllowSetForegroundWindow.Call(uintptr(pid))
 }
 
 // Uninstall removes registry keys, shortcuts, and schedules the installed executable/directory for deletion.
