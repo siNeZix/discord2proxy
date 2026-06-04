@@ -174,11 +174,7 @@ func internetOpenURL(hInternet uintptr, url string) (uintptr, error) {
 
 // getLatestAssetURL builds the stable redirect URL for the latest GUI asset.
 func getLatestAssetURL() string {
-	// ВРЕМЕННО: текущий последний релиз (v0.1.0) публикует GUI как
-	// discord2proxy-gui.exe. release.yml уже переименован на d2p.exe, но новый
-	// релиз ещё не вышел. После публикации релиза с d2p.exe сменить здесь имя
-	// на d2p.exe (и синхронно update.AssetName).
-	return fmt.Sprintf("https://github.com/%s/%s/releases/latest/download/discord2proxy-gui.exe", config.RepoOwner, config.RepoName)
+	return fmt.Sprintf("https://github.com/%s/%s/releases/latest/download/d2p.exe", config.RepoOwner, config.RepoName)
 }
 
 // getLatestVersionTagAPI fetches the latest release tag via the GitHub API,

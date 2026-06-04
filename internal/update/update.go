@@ -21,12 +21,7 @@ import (
 
 // AssetName is the release asset matched and downloaded for self-update. It
 // must stay in sync with the artifact name produced by the release workflow.
-//
-// ВРЕМЕННО: текущий последний релиз (v0.1.0) публикует GUI как
-// discord2proxy-gui.exe. release.yml уже переименован на d2p.exe, но новый
-// релиз ещё не вышел. После публикации релиза с d2p.exe сменить на "d2p.exe"
-// (и синхронно cmd/setup/main.go getLatestAssetURL).
-const AssetName = "discord2proxy-gui.exe"
+const AssetName = "d2p.exe"
 
 const releasesLatestURL = "https://api.github.com/repos/%s/%s/releases/latest"
 
