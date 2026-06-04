@@ -82,7 +82,13 @@ type UI struct {
 
 	btnInstall   widget.Clickable
 	btnUninstall widget.Clickable
-	btnUpdate    widget.Clickable
+	// Transparent click-traps laid over the install/uninstall buttons while
+	// they are force-blocked (Discord running, force unchecked). They catch
+	// the click on an otherwise-inert button and surface a "close Discord"
+	// hint instead of leaving the press to dangle on the disabled button.
+	btnInstallHint   widget.Clickable
+	btnUninstallHint widget.Clickable
+	btnUpdate        widget.Clickable
 	btnTelegram  widget.Clickable
 	btnGithub    widget.Clickable
 	chkForce     widget.Bool
@@ -92,6 +98,14 @@ type UI struct {
 	phase            uiPhase
 	btnPromptInstall widget.Clickable
 	btnPromptNotNow  widget.Clickable
+
+	// Button actionability computed once per frame in layout() and consumed by
+	// buttons(). Both run in the render loop, so no locking is needed; sharing
+	// them avoids recomputing from independently-read state (which could race
+	// the discordRunning watcher and disagree between the two functions).
+	canInstall   bool
+	canUninstall bool
+	forceBlocked bool
 
 	statusMsg   string
 	statusColor color.NRGBA
@@ -212,23 +226,62 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 		return ui.promptLayout(gtx, phase)
 	}
 
+	// Process the force checkbox up-front so a toggle takes effect on the very
+	// same frame it was clicked. Otherwise buttons (laid out before forceRow)
+	// would read the stale value and only refresh on the next frame triggered
+	// by mouse movement, making activation feel like it needs a hover nudge.
+	ui.chkForce.Update(gtx)
+
 	ui.mu.Lock()
-	canInstall := ui.install != nil && ui.proxyInfo != nil && !ui.busy && !ui.detecting
-	canUninstall := ui.install != nil && ui.installed && !ui.busy && !ui.detecting
+	discordRunning := ui.discordRunning
 	statusMsg := ui.statusMsg
 	statusColor := ui.statusColor
 	statusTime := ui.statusTime
 	busy := ui.busy
-	busyStart := ui.busyStart
 	canUpdate := ui.updateRel != nil && !ui.updateBusy
+	hasInstall := ui.install != nil
+	hasProxy := ui.proxyInfo != nil
+	installed := ui.installed
+	detecting := ui.detecting
 	ui.mu.Unlock()
 
 	force := ui.chkForce.Value
-	if ui.btnInstall.Clicked(gtx) && canInstall {
-		go ui.doInstall(force)
+	// When Discord is running and "force" is unchecked, the buttons are
+	// inert; clicks land on a transparent trap that shows a hint instead.
+	// Computed once here and stashed on ui for buttons() to reuse, so both
+	// agree on the same frame's state instead of re-reading it independently.
+	forceBlocked := discordRunning && !force
+	canInstall := hasInstall && hasProxy && !busy && !detecting && !forceBlocked
+	canUninstall := hasInstall && installed && !busy && !detecting && !forceBlocked
+	ui.forceBlocked = forceBlocked
+	ui.canInstall = canInstall
+	ui.canUninstall = canUninstall
+
+	// Only read clicks while the button is actionable. Reading them
+	// unconditionally (and dropping the action via the guard) still drains
+	// pointer presses into the Clickable's gesture state, which leaves the
+	// disabled button visibly interactive (hover highlight + press ripple).
+	// When inert, drain via a disabled context so no events are consumed.
+	if canInstall {
+		if ui.btnInstall.Clicked(gtx) {
+			go ui.doInstall(force)
+		}
+	} else {
+		ui.btnInstall.Clicked(gtx.Disabled())
 	}
-	if ui.btnUninstall.Clicked(gtx) && canUninstall {
-		go ui.doUninstall(force)
+	if canUninstall {
+		if ui.btnUninstall.Clicked(gtx) {
+			go ui.doUninstall(force)
+		}
+	} else {
+		ui.btnUninstall.Clicked(gtx.Disabled())
+	}
+	// Always drain the trap clicks so presses never accumulate; only act on
+	// them while the buttons are actually force-blocked.
+	hintInstall := ui.btnInstallHint.Clicked(gtx)
+	hintUninstall := ui.btnUninstallHint.Clicked(gtx)
+	if forceBlocked && (hintInstall || hintUninstall) {
+		ui.showHint("Сначала закройте Discord")
 	}
 	if ui.btnUpdate.Clicked(gtx) && canUpdate {
 		go ui.doUpdate()
@@ -240,11 +293,28 @@ func (ui *UI) layout(gtx layout.Context) layout.Dimensions {
 		openURL(fmt.Sprintf("https://github.com/%s/%s", config.RepoOwner, config.RepoName))
 	}
 
-	if busy && !busyStart.IsZero() {
-		since := time.Since(busyStart)
-		if since < time.Second {
-			gtx.Execute(op.InvalidateCmd{At: busyStart.Add(time.Second)})
-		}
+	// While an operation runs in a background goroutine no input events are
+	// generated, so without an explicit request the render loop would stop
+	// producing frames: the button's press ripple freezes mid-flight and only
+	// advances when the mouse is moved. The same gap appears for the brief
+	// ripple fade-out that outlives the (usually very short) busy state, which
+	// is what leaves a stray ink circle on the button until the next pointer
+	// event. Keep requesting frames while either the operation is busy or any
+	// clickable still has a live press in its history (Gio retains presses for
+	// ~1s and drives the ink animation off the frame stream). The loop
+	// self-terminates: once busy clears and all histories drain, the frame
+	// that observes neither condition stops scheduling another invalidate.
+	ripple := len(ui.btnInstall.History()) > 0 ||
+		len(ui.btnUninstall.History()) > 0 ||
+		len(ui.btnInstallHint.History()) > 0 ||
+		len(ui.btnUninstallHint.History()) > 0 ||
+		len(ui.btnUpdate.History()) > 0 ||
+		len(ui.btnTelegram.History()) > 0 ||
+		len(ui.btnGithub.History()) > 0 ||
+		len(ui.btnPromptInstall.History()) > 0 ||
+		len(ui.btnPromptNotNow.History()) > 0
+	if busy || ripple {
+		gtx.Execute(op.InvalidateCmd{})
 	}
 
 	if statusMsg != "" && statusColor == colGreen && !statusTime.IsZero() && time.Since(statusTime) > 5*time.Second {
@@ -476,14 +546,15 @@ func (ui *UI) detailText(gtx layout.Context) layout.Dimensions {
 
 func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 	ui.mu.Lock()
-	hasInstall := ui.install != nil
-	hasProxy := ui.proxyInfo != nil
 	installed := ui.installed
-	blocked := ui.busy || ui.detecting
 	ui.mu.Unlock()
 
-	canInstall := hasInstall && hasProxy && !blocked
-	canUninstall := hasInstall && installed && !blocked
+	// Reuse the actionability computed once per frame in layout() so both
+	// functions agree on the same state (avoids racing the discordRunning
+	// watcher between two independent reads).
+	forceBlocked := ui.forceBlocked
+	canInstall := ui.canInstall
+	canUninstall := ui.canUninstall
 
 	installLabel := "Установить"
 	if installed {
@@ -492,33 +563,60 @@ func (ui *UI) buttons(gtx layout.Context) layout.Dimensions {
 
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			btn := material.Button(ui.theme, &ui.btnInstall, installLabel)
-			btn.CornerRadius = 8
-			if canInstall {
-				btn.Background = colAccent
-				btn.Color = colText
-			} else {
-				btn.Background = colDisabled
-				btn.Color = colTextDim
-				// Suppress hover/press events so a non-actionable
-				// button is visibly and functionally inert.
-				gtx = gtx.Disabled()
-			}
-			return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
+			return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				draw := func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(ui.theme, &ui.btnInstall, installLabel)
+					btn.CornerRadius = 8
+					if canInstall {
+						btn.Background = colAccent
+						btn.Color = colText
+					} else {
+						btn.Background = colDisabled
+						btn.Color = colTextDim
+						// Suppress hover/press events so a non-actionable
+						// button is visibly and functionally inert.
+						gtx = gtx.Disabled()
+					}
+					return btn.Layout(gtx)
+				}
+				return ui.withHintTrap(gtx, forceBlocked, &ui.btnInstallHint, draw)
+			})
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			btn := material.Button(ui.theme, &ui.btnUninstall, "Удалить")
-			btn.CornerRadius = 8
-			if canUninstall {
-				btn.Background = colAccent2
-				btn.Color = colText
-			} else {
-				btn.Background = colDisabled
-				btn.Color = colTextDim
-				// Nothing to uninstall -> button is inert.
-				gtx = gtx.Disabled()
+			draw := func(gtx layout.Context) layout.Dimensions {
+				btn := material.Button(ui.theme, &ui.btnUninstall, "Удалить")
+				btn.CornerRadius = 8
+				if canUninstall {
+					btn.Background = colAccent2
+					btn.Color = colText
+				} else {
+					btn.Background = colDisabled
+					btn.Color = colTextDim
+					// Nothing to uninstall -> button is inert.
+					gtx = gtx.Disabled()
+				}
+				return btn.Layout(gtx)
 			}
-			return btn.Layout(gtx)
+			return ui.withHintTrap(gtx, forceBlocked, &ui.btnUninstallHint, draw)
+		}),
+	)
+}
+
+// withHintTrap draws the button via draw and, while blocked, overlays a
+// transparent clickable of the exact same size so a click on the (inert)
+// button is captured and routed to a hint instead of dangling. When not
+// blocked it draws the button alone, so the trap never steals input.
+func (ui *UI) withHintTrap(gtx layout.Context, blocked bool, trap *widget.Clickable, draw layout.Widget) layout.Dimensions {
+	if !blocked {
+		return draw(gtx)
+	}
+	return layout.Stack{}.Layout(gtx,
+		layout.Stacked(draw),
+		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+			return trap.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				pointer.CursorPointer.Add(gtx.Ops)
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			})
 		}),
 	)
 }
@@ -534,8 +632,8 @@ func (ui *UI) forceRow(gtx layout.Context) layout.Dimensions {
 		return layout.Dimensions{}
 	}
 
-	// Update the bool widget first so the value is fresh when calculating the label text
-	ui.chkForce.Update(gtx)
+	// The checkbox is processed once at the top of layout() so its value is
+	// already fresh here (and for the buttons laid out before this row).
 
 	// The checkbox label switches to a warning while force is enabled, and
 	// reverts to the original prompt when unchecked.
@@ -886,6 +984,17 @@ func (ui *UI) setStatusLocked(msg string, ok bool) {
 	// Clear busy state when setting final status
 	ui.busyMsg = ""
 	ui.busyStart = time.Time{}
+}
+
+// showHint surfaces a brief notice (e.g. asking the user to close Discord) in
+// the footer banner. Used by the click-traps over the inert force-blocked
+// buttons; those are only live while no operation is running, so reusing
+// setStatusLocked (which clears busy fields) is safe here.
+func (ui *UI) showHint(msg string) {
+	ui.mu.Lock()
+	ui.setStatusLocked(msg, false)
+	ui.mu.Unlock()
+	ui.window.Invalidate()
 }
 
 func (ui *UI) setBusyLocked(msg string) {

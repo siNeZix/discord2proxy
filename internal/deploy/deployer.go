@@ -168,6 +168,10 @@ func (d *Deployer) Deploy(install *discord.DiscordInstall, proxyInfo *proxy.Prox
 		return d.dryRun(install, proxyInfo)
 	}
 
+	// Clear any leftovers from a prior uninstall before laying down fresh
+	// files so the app directory stays clean.
+	sweepLeftovers(install.AppDir)
+
 	content := formatProxyConfig(proxyInfo.Host, proxyInfo.Port)
 
 	targetProxyPath := filepath.Join(install.AppDir, d.Config.ProxyFile)
@@ -246,13 +250,16 @@ func (d *Deployer) Uninstall(install *discord.DiscordInstall) error {
 	var errs []error
 	for _, name := range files {
 		p := filepath.Join(install.AppDir, name)
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		if err := removeFile(p); err != nil && !os.IsNotExist(err) {
 			errs = append(errs, fmt.Errorf("ошибка удаления %s: %w", p, err))
 		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+
+	// Drop any leftovers from earlier deferred deletes so they don't linger.
+	sweepLeftovers(install.AppDir)
 
 	if restart {
 		if err := startDiscord(install); err != nil {
@@ -304,4 +311,87 @@ func writeFile(path string, data []byte) error {
 		return err
 	}
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+// removeFile deletes path without the multi-second stall a plain os.Remove can
+// incur on Windows when the target is a loaded/mapped DLL (DWrite.dll,
+// force-proxy.dll): the kernel unlink of a mapped image goes through the
+// filesystem filter stack (Defender real-time scan) synchronously.
+//
+// To stay cheap and non-blocking, it first renames the file aside (an atomic
+// MoveFileEx that does not require the unlink to complete immediately), then
+// removes the renamed copy. If even the rename is impossible because the file
+// is still in use, it schedules deletion on the next reboot so the uninstall
+// still completes and never hangs. A missing file is reported via the usual
+// os.IsNotExist-compatible error so callers can ignore it.
+func removeFile(path string) error {
+	// Fast path: if the file isn't there, surface a NotExist error so the
+	// caller's os.IsNotExist guard can skip it.
+	if _, err := os.Lstat(path); err != nil {
+		return err
+	}
+
+	// Plain remove first — succeeds instantly when nothing has the file open.
+	if err := os.Remove(path); err == nil {
+		return nil
+	}
+
+	// Move the file aside, then delete the (now unreferenced by name) copy.
+	// MoveFileEx swaps the directory entry without waiting on the mapped
+	// image, so it returns immediately even while Discord has the DLL loaded.
+	// The aside name is unique per call so it never collides with a leftover
+	// from a prior uninstall still pending a reboot delete (which would make
+	// the rename fail even with MOVEFILE_REPLACE_EXISTING).
+	aside := fmt.Sprintf("%s.%d%s", path, time.Now().UnixNano(), leftoverSuffix)
+	from, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(aside)
+	if err != nil {
+		return err
+	}
+	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING); err == nil {
+		// Best-effort delete of the renamed file; if it's still mapped, defer
+		// its removal to the next reboot. Either way the target name is gone.
+		if rerr := os.Remove(aside); rerr != nil {
+			scheduleDeleteOnReboot(aside)
+		}
+		return nil
+	}
+
+	// Couldn't even rename it: schedule the original for deletion on reboot so
+	// the operation still finishes without blocking the UI.
+	scheduleDeleteOnReboot(path)
+	return nil
+}
+
+// scheduleDeleteOnReboot marks path for removal during the next system boot via
+// MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT (nil destination). Best-effort.
+func scheduleDeleteOnReboot(path string) {
+	from, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	_ = windows.MoveFileEx(from, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT)
+}
+
+// leftoverSuffix marks files renamed aside by removeFile when a plain delete
+// could not complete because the target was still mapped.
+const leftoverSuffix = ".szx-del"
+
+// sweepLeftovers removes any *.szx-del files orphaned in dir by a previous
+// removeFile call whose deferred delete never ran (e.g. no reboot happened
+// since). Best-effort: still-locked leftovers are re-scheduled for the next
+// reboot so they cannot accumulate in Discord's app directory.
+func sweepLeftovers(dir string) {
+	matches, err := filepath.Glob(filepath.Join(dir, "*"+leftoverSuffix))
+	if err != nil {
+		return
+	}
+	for _, p := range matches {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			scheduleDeleteOnReboot(p)
+		}
+	}
 }
