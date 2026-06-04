@@ -53,6 +53,24 @@ Gio v0.9.0 with local patches:
 - If bumping Gio: re-copy the upstream module, clear read-only attrs, re-apply the
   centering patch and the checkable hover patch, then `go mod tidy`.
 
+## Executable icons
+
+Each command embeds its icon via a committed `rsrc_windows*.syso` (CI does not
+generate them). Icon sources live in `assets/` (`favicon-original.png` for
+CLI/GUI, `favicon-installer.png` for setup).
+
+- `cmd/setup` uses an intentionally light icon (`cmd/setup/winres/`: 48/32/16 PNG,
+  no 256×256) to keep `d2p-setup.exe` well under the 3 MB limit. The syso is
+  `cmd/setup/rsrc_windows_windows_amd64.syso` (~7 KB).
+- Regenerate it with [`go-winres`](https://github.com/tc-hib/go-winres)
+  (`go install github.com/tc-hib/go-winres@latest`):
+  `go-winres make --arch amd64 --in winres/winres.json --out rsrc_windows`
+  (run from `cmd/setup/`). The `RT_GROUP_ICON` MUST use numeric ID `#1` — the
+  Win32 window in `winui_windows.go` loads it via `LoadImage(hInst, 1, IMAGE_ICON…)`.
+- The setup window is drawn with raw Win32 (not Gio), so the icon must be set on
+  the window class (`wc.hIcon`/`hIconSm`) or Windows shows its default in the
+  caption bar. Gio (CLI/GUI) loads icon ID 1 on its own.
+
 ## Architecture
 
 1. **Proxy detection**: TCP connect + SOCKS5 handshake on 127.0.0.1:2080 (nekobox) then :1080 (v2ray)

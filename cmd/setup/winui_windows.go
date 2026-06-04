@@ -21,6 +21,7 @@ var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
 	procGetModuleHandle      = kernel32.NewProc("GetModuleHandleW")
+	procLoadImage            = user32.NewProc("LoadImageW")
 	procRegisterClassEx      = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx       = user32.NewProc("CreateWindowExW")
 	procDefWindowProc        = user32.NewProc("DefWindowProcW")
@@ -159,6 +160,13 @@ const (
 	swShow = 5
 	swHide = 0
 
+	// Window-class icon loaded from the embedded resource (rsrc_windows_*.syso),
+	// whose RT_GROUP_ICON is generated with numeric ID #1 by go-winres.
+	imageIcon     = 1          // IMAGE_ICON
+	lrDefaultSize = 0x00000040 // LR_DEFAULTSIZE
+	lrShared      = 0x00008000 // LR_SHARED
+	iconResID     = 1          // embedded icon group resource ID
+
 	odsDisabled = 0x0004
 
 	transparent  = 1
@@ -296,13 +304,21 @@ func runWindow() {
 	win.fontH = makeFont(-24, fwBold)
 	win.fontBtn = makeFont(-17, fwBold)
 
+	// Load the embedded application icon so it shows in the window's caption
+	// bar (next to the close button), the taskbar and Alt+Tab. The window is
+	// drawn with raw Win32 here (unlike the Gio GUI, which loads it itself), so
+	// the class must reference the icon explicitly or Windows uses its default.
+	hIcon, _, _ := procLoadImage.Call(hInst, iconResID, imageIcon, 0, 0, lrDefaultSize|lrShared)
+
 	className := utf16("D2PSetupWindow")
 	wc := wndClassEx{
 		cbSize:        uint32(unsafe.Sizeof(wndClassEx{})),
 		lpfnWndProc:   syscall.NewCallback(wndProc),
 		hInstance:     hInst,
+		hIcon:         hIcon,
 		hbrBackground: win.hbrBg,
 		lpszClassName: className,
+		hIconSm:       hIcon,
 	}
 	hCursor, _, _ := user32.NewProc("LoadCursorW").Call(0, 32512) // IDC_ARROW
 	wc.hCursor = hCursor
