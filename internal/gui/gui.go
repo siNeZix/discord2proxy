@@ -42,6 +42,11 @@ const (
 	phasePrompt
 )
 
+const (
+	labelPromptInstall    = "Установить"
+	labelPromptInstalling = "Идёт установка"
+)
+
 var (
 	colBg       = color.NRGBA{R: 0x1E, G: 0x1E, B: 0x2E, A: 0xFF}
 	colBg2      = color.NRGBA{R: 0x25, G: 0x25, B: 0x35, A: 0xFF}
@@ -89,11 +94,11 @@ type UI struct {
 	btnInstallHint   widget.Clickable
 	btnUninstallHint widget.Clickable
 	btnUpdate        widget.Clickable
-	btnTelegram  widget.Clickable
-	btnGithub    widget.Clickable
-	chkForce     widget.Bool
-	chkDesktop   widget.Bool
-	chkStartMenu widget.Bool
+	btnTelegram      widget.Clickable
+	btnGithub        widget.Clickable
+	chkForce         widget.Bool
+	chkDesktop       widget.Bool
+	chkStartMenu     widget.Bool
 
 	phase            uiPhase
 	btnPromptInstall widget.Clickable
@@ -1022,6 +1027,16 @@ func (ui *UI) promptLayout(gtx layout.Context, phase uiPhase) layout.Dimensions 
 		ui.mu.Unlock()
 	}
 
+	// promptLayout returns before layoutMain's ripple/invalidate block runs,
+	// so it must keep the frame stream alive itself: while busy or while the
+	// prompt buttons still have a live press in history, request frames so the
+	// click ripple finishes its ink animation instead of freezing mid-flight.
+	ripple := len(ui.btnPromptInstall.History()) > 0 ||
+		len(ui.btnPromptNotNow.History()) > 0
+	if busy || ripple {
+		gtx.Execute(op.InvalidateCmd{})
+	}
+
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(30), Left: unit.Dp(20), Right: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -1061,7 +1076,11 @@ func (ui *UI) promptLayout(gtx layout.Context, phase uiPhase) layout.Dimensions 
 		}),
 		layout.Flexed(1, layout.Spacer{}.Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			if statusMsg == "" {
+			// Suppress the status banner while the install runs: the button
+			// itself reflects progress ("Идёт установка"), and inserting a
+			// banner Rigid here would push the whole form down. Errors clear
+			// busy before setting the message, so they still surface.
+			if statusMsg == "" || busy {
 				return layout.Dimensions{}
 			}
 			return ui.statusBannerDraw(gtx, statusMsg, statusColor)
@@ -1071,7 +1090,11 @@ func (ui *UI) promptLayout(gtx layout.Context, phase uiPhase) layout.Dimensions 
 				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							btn := material.Button(ui.theme, &ui.btnPromptInstall, "Установить")
+							label := labelPromptInstall
+							if busy {
+								label = labelPromptInstalling
+							}
+							btn := material.Button(ui.theme, &ui.btnPromptInstall, label)
 							btn.CornerRadius = 8
 							if busy {
 								btn.Background = colDisabled
